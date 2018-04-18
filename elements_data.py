@@ -3,9 +3,9 @@ import periodictable
 
 # Default elements by bond count: He, H, O, B, C, N, S, Cl, Os
 # We only need other elements if we're making a fusion level
-default_bond_count_elements = { 0:2, 1:1, 2:8, 3:5, 4:6, 5:7, 6:16, 7:17, 8:76 }
+default_bond_count_elements = { 0:'He', 1:'H', 2:'O', 3:'B', 4:'C', 5:'N', 6:'S', 7:'Cl', 8:'Os' }
 
-basic_elements = [default_bond_count_elements[k] for k in range(1, 9)] # Skip noble gases
+basic_elements = [default_bond_count_elements[c] for c in range(1, 9)] # Skip noble gases
 
 max_bonds = {
     1: 1,
@@ -129,6 +129,9 @@ all_elements = max_bonds.keys()
 # Symbol -> atomic # lookups
 atomic_numbers = { periodictable.elements[i].symbol: i for i in all_elements }
 symbols = { i: periodictable.elements[i].symbol for i in all_elements }
+
+# Commonly used list:
+non_noble_symbols = [s for n, s in symbols.items() if max_bonds[n] != 0]
 
 elements_with_bond_count = { k: [e for e in all_elements
                                  if max_bonds[e] == k]

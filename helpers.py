@@ -62,17 +62,26 @@ class Formula(collections.Counter):
         # It is left as an exercise to the reader to prove that constructing a molecule in this way,
         # with higher bond count atoms placed first and preferring the middle, will fail iff it is
         # impossible to construct any molecule from the given atoms.
-
+        # Thus, we can count the 'useful' bonds added by each successive atom, and if it fails to
+        # equal or exceed the minimum # of bonds in a fully-connected graph of the required size,
+        # then a molecule cannot be constructed.
+        # It is also required that each atom be able to form at least 1 bond if the molecule is not
+        # size 1.
+        total_atoms = self.total_atoms()
         total_connections = 0
         max_connections_by_idx = [4, 4, 3, 3, 2, 2, 2, 2] + [1]*8
         i = 0
         for element in sorted(self.keys(), key=lambda x: elements_data.max_bonds[elements_data.atomic_numbers[x]], reverse=True):
             element_max_bonds = elements_data.max_bonds[elements_data.atomic_numbers[element]]
+            # If there's a noble gas and more than 1 atom, it's invalid
+            if total_atoms > 1 and element_max_bonds == 0:
+                return False
+            # Count 'useful' connections
             for i in range(self[element]):
                 total_connections += min(element_max_bonds, max_connections_by_idx[i])
                 i += 1
         # For N atoms there are min N-1 connections, each contributing min 1 bond to each of two atoms
-        return total_connections >= 2*(self.total_atoms() - 1)
+        return total_connections >= 2*(total_atoms - 1)
 
 
 class GridPos:
