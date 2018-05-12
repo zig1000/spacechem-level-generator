@@ -1,8 +1,10 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import periodictable
 
 # Default elements by bond count: He, H, O, B, C, N, S, Cl, Os
-# We only need other elements if we're making a fusion level
+# We only really need other elements if we're making a fusion level
 default_bond_count_elements = { 0:'He', 1:'H', 2:'O', 3:'B', 4:'C', 5:'N', 6:'S', 7:'Cl', 8:'Os' }
 
 basic_elements = [default_bond_count_elements[c] for c in range(1, 9)] # Skip noble gases
@@ -116,23 +118,28 @@ max_bonds = {
     106: 6,
     107: 7,
     108: 8,
-    109: 6
+    109: 6,
 
     # Greek elements
-    #200: 12, 201: 12, 202: 12, 203: 12
+    200: 12,
+    201: 12,
+    202: 12,
+    203: 12
+
     # Australium
+    # Not included for now because it follows same fission rules as gold which will be problematic
     #204: 5
 }
 
-all_elements = max_bonds.keys()
-
 # Symbol -> atomic # lookups
-atomic_numbers = { periodictable.elements[i].symbol: i for i in all_elements }
-symbols = { i: periodictable.elements[i].symbol for i in all_elements }
+atomic_numbers = { periodictable.elements[i].symbol: i for i in range(1, 110) }
+atomic_numbers.update({ 'Θ':200, 'Ω':201, 'Σ':202, 'Δ':203 })
+symbols = { atomic_numbers[s]: s for s in atomic_numbers.keys() }
 
 # Commonly used list:
 non_noble_symbols = [s for n, s in symbols.items() if max_bonds[n] != 0]
 
-elements_with_bond_count = { k: [e for e in all_elements
+# Unused for now but could be useful
+elements_with_bond_count = { k: [e for e in max_bonds.keys()
                                  if max_bonds[e] == k]
-                             for k in range(9) }
+                             for k in range(9) + [12] }

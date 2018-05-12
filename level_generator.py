@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 '''Maybe allow as args which tools the reactor contains (fusion laser, fission
 laser, etc) and have the generated molecules be based on those.
@@ -16,16 +17,12 @@ TODO:
 '''
 
 import argparse
-import base64
 import copy
 import fractions
-import gzip
-import json
 import random
-import StringIO
 
 import elements_data
-from helpers import Formula, GridPos, Atom, Molecule
+from helpers import *
 
 def randTotalInputsSize(difficulty, min_size=1):
     '''Generate a combined size for a level's inputs, in # of atoms.
@@ -40,13 +37,18 @@ def randTotalInputsSize(difficulty, min_size=1):
         return random.randint(max(11, min_size), 16)
 
 
-def randFormula(num_atoms,
+def randFormula(num_atoms=None,
                 elements=None,
                 element_reuse_factor=0.6,
                 nobles=False):
-    '''Generate a random molecule formula with the specified # of atoms, and drawn with replacement
+    '''Generate a random molecule formula, optionally specifying a # of atoms, and drawn with replacement
     from the specified list of elements (default all elements).
     '''
+    if num_atoms is None: # If size isn't specified keep adding atoms with 75% probability
+        num_atoms = 1
+        while num_atoms <= 16 and random.randint(1, 4) != 1:
+            num_atoms += 1
+
     # Restrict noble gases
     if elements is None:
         if num_atoms == 1 and nobles:
@@ -85,20 +87,13 @@ def randFormula(num_atoms,
     return formula
 
 def randMolecule(num_atoms=None,
-                 elements=None,
-                 difficulty=random.randint(0, 3)):
-    '''Generate a random molecule by randomy generating and adding one atom at a time. Bias the
-    elements new atoms are drawn from to increase the chances of drawing elements already present
-    in the molecule.
+                 elements=None):
+    '''Generate a random molecule.
     Args:
         num_atoms: The target number of atoms, 1 to 16. Note that the current algorithm can fall short of the
                    target # of atoms if it runs out of available bonds.
-        elements: The pool of elements that atoms may be drawn from (with replacement)
-        difficulty: From 0 to 3 with 3 being the hardest, as displayed in ResearchNet. If num_atoms
-                    is not specified, the difficulty affects the randomly selected # of atoms.
+        elements: The pool of elements that atoms may be drawn from (with replacement).
     '''
-    if num_atoms is None:
-        num_atoms = randMoleculeSize(difficulty=difficulty)
     formula = randFormula(num_atoms=num_atoms, elements=elements)
     return randMoleculeFromFormula(formula)
 
@@ -116,9 +111,9 @@ def randMoleculeFromFormula(formula):
     while True:
         if attempts >= 1000:
             raise Exception("No valid molecule found after 1000 retries for formula: {0}"
-                            .format(list(formula.elements())))
+                            .format(list(formula.atoms())))
 
-        atoms = list(elements_data.atomic_numbers[s] for s in formula.elements())
+        atoms = list(elements_data.atomic_numbers[s] for s in formula.atoms())
         random.shuffle(atoms)
 
         molecule = Molecule()
@@ -129,13 +124,15 @@ def randMoleculeFromFormula(formula):
 
             # If it's the last atom or placing this atom can't block placement of the next atom,
             # proceed freely. It's possible to have only one open position but lots of open bonds,
-            # or only one open bond but lots of open positions.
+            # or only one open bond but lots of open positions, so check carefully
             open_positions = molecule.open_positions()
             if not open_positions:
-                print 'Error: molecule has open bonds but no positions in molecule:'
-                print molecule
+                # In theory this should never occur
+                print 'Error in call to randMoleculeFromFormula with formula: {0}'.format(formula) \
+                      + '\nConstructed partial molecule with open bonds but no open positions: ' \
+                      + str(molecule)
             elif (len(open_positions) > 1 and molecule.open_bonds != 1) \
-               or len(atoms) == 1:
+                 or len(atoms) == 1:
                 i = 0
             else:
                 # Given that we only have one available bond or position to add the new atom (and it
@@ -179,9 +176,9 @@ def randMoleculeFromFormula(formula):
             molecule.add_atom(atom)
         attempts += 1
 
-        # If we failed to add any atoms, restore the original list and retry
+        # If any atoms failed to be added, restore the original list and retry
         if atoms:
-            atoms = list(elements_data.atomic_numbers[s] for s in formula.elements())
+            atoms = list(elements_data.atomic_numbers[s] for s in formula.atoms())
             continue
 
         # Otherwise, now that we've successfully added all the molecules, randomly add more bonds
@@ -218,14 +215,12 @@ def randMoleculeFromFormula(formula):
 
         return molecule
 
-
-def randBasicMolecule(num_atoms=None, difficulty=None):
+def randBasicMolecule(num_atoms=None):
     '''Generate a random non-noble molecule using only the 'basic' elements:
     [O, B, C, N, S, Cl, Os]
     '''
     return randMolecule(num_atoms=num_atoms,
-                        elements=elements_data.basic_elements,
-                        difficulty=difficulty)
+                        elements=elements_data.basic_elements)
 
 def randFullyBondedMolecule():
     pass # TODO
@@ -235,12 +230,13 @@ def randFullyBondedBasicMolecule():
 
 def randOutputMolecules(input_molecules,
                         difficulty,
+                        max_outputs=2, # Set to 3 for a production level
                         bonders=True,
                         fusion=True,
                         fission=True):
     '''Given a list of input molecules, generate a valid list of output molecules.
     '''
-    if type(input_molecules) == type(Molecule):
+    if type(input_molecules) == type(Molecule): # Allow passing in a lone molecule
         input_molecules = [input_molecules]
 
     # Randomize the relative ratio of inputs in the balanced equation
@@ -251,14 +247,14 @@ def randOutputMolecules(input_molecules,
         # e.g. C2H4 is effectively equivalent to CH2 in terms of creating a wasteless output
         lcm_formula = copy.copy(input_molecule.formula)
         lcm_formula.divide_by_gcd()
-        # TODO: I was multiplying the GCD molecule by some factor before, but my outputs were
+        # TODO: I was multiplying the GCD molecule by some factor before, but the outputs were
         #       getting way too complex so for now I'll just pass the gcd over, and let the
-        #       randomness of the input moleculess GCDs decide their relative ratios
+        #       randomness of the input molecules' GCDs decide their relative ratios
         balanced_inputs_formula += lcm_formula
 
         # TODO: This is a kludgy workaround for now to make sure that we don't
         # have to be too smart about not exceeding the output grid size
-        #max_input_use_factor = 16 / lcm_formula.total_atoms()
+        #max_input_use_factor = 16 / lcm_formula.num_atoms()
         # Exponentially bias the input group created so its not usually too large
         #input_use_factor = 1 # Leave it here for difficulty 0
         #if difficulty == 1:
@@ -285,44 +281,57 @@ def randOutputMolecules(input_molecules,
     balanced_outputs_lcm_formula = copy.copy(balanced_outputs_formula)
     balanced_outputs_lcm_formula.divide_by_gcd()
     if not balanced_outputs_lcm_formula.isValid():
-        output_zones = [0, 1]
+        if balanced_outputs_lcm_formula.num_atoms() <= max_outputs:
+            # In the rare case where we have noble gas(es) among 2 or 3 inputs, just restrict the
+            # # of outputs to match them.
+            # TODO: This biases cases where 3 atoms fit in 2 outputs (but not 1)
+            num_outputs = balanced_outputs_lcm_formula.num_atoms()
+        else:
+            # We'll assume the balanced inputs fit within 2 output zones
+            num_outputs = random.randint(2, max_outputs)
     else:
-        # 50/50 of single vs double output
-        output_zones = random.choice([[0], [1], [0, 1], [0, 1]])
+        # Equal chance for any # of outputs (research = 1 or 2, production = 1, 2, or 3)
+        # TODO: 50% chance of 2 outputs in productions?
+        num_outputs = random.randint(1, max_outputs)
 
     # Now attempt to allocate the outputs among the output zones and reduce each to a valid LCM
-    output_lcm_formulas = []
-    if len(output_zones) == 1:
-        # In this case we've already checked that the full formula's LCM fits in one input zone
-        output_lcm_formulas.append(balanced_outputs_lcm_formula)
-    if len(output_zones) == 2:
+    # In case we have less atoms to allocate than output zones, just duplicate
+    # the balanced inputs across all outputs.
+    # TODO: fine for 1:2 or 1:3, but heavy-handed for 2:3
+    if num_outputs == 1 or balanced_outputs_formula.num_atoms() < num_outputs:
+        output_lcm_formulas = [copy.copy(balanced_outputs_formula)
+                               for i in range(num_outputs)]
+    else:
+        # Otherwise, randomly split the balanced formula between output zones
         split_attempts = 0
-        while not (len(output_lcm_formulas) == 2
-                   and output_lcm_formulas[0].isValid()
-                   and output_lcm_formulas[1].isValid()):
+        output_lcm_formulas = []
+        atoms = list(balanced_outputs_formula.atoms())
+        num_atoms = len(atoms)
+        while not (output_lcm_formulas
+                   and all(formula.isValid() for formula in output_lcm_formulas)):
             if split_attempts >= 1000:
                 raise Exception("Could not find valid split of output atoms {0} in 1000 attempts"
                                 .format(balanced_outputs_formula))
 
-            # Randomly split the formula between the two output zones
-            # TODO: use numpy.random.choice(p=[1,2,3]) for performance
-            num_atoms = balanced_outputs_formula.total_atoms()
-            atoms = list(balanced_outputs_formula.elements())
-
-            # If we only had one atom and want two output zones, just duplicate it
-            # we also know in this case that the LCM is valid
-            if num_atoms == 1:
-                output_lcm_formulas = [Formula(atoms), Formula(atoms)]
-                break
-            else: # Randomly split the formula
-                random.shuffle(atoms)
-                pivot = random.randint(max(1, num_atoms - 16),
-                                       min(16, num_atoms - 1))
-                output_lcm_formulas = [Formula(atoms[:pivot]),
-                                       Formula(atoms[pivot:])]
-                # Take the LCM of the split lists
-                output_lcm_formulas[0].divide_by_gcd()
-                output_lcm_formulas[1].divide_by_gcd()
+            # Remove chunks from the start of the atom list iteratively
+            # TODO: Current implementation is biased toward initial inputs in the way it splits
+            output_lcm_formulas = []
+            random.shuffle(atoms)
+            remaining_atoms = copy.copy(atoms)
+            num_remaining_atoms = num_atoms
+            for i in range(num_outputs - 1):
+                remaining_outputs = num_outputs - i - 1
+                # Leave at least 1 and at most 16 atoms per remaining output zone
+                # Pivot doesn't include itself in the draw so start from idx at least 1.
+                pivot = random.randint(max(1, num_remaining_atoms - 16*remaining_outputs),
+                                       min(16, num_remaining_atoms - remaining_outputs))
+                drawn_atoms, remaining_atoms = remaining_atoms[:pivot], remaining_atoms[pivot:]
+                output_lcm_formulas.append(Formula(drawn_atoms))
+                num_remaining_atoms -= pivot
+            output_lcm_formulas.append(Formula(remaining_atoms))
+            # Take the LCM of the split lists before checking validity
+            for formula in output_lcm_formulas:
+                formula.divide_by_gcd()
             split_attempts += 1
 
     # Now take the LCM formulas that we just generated for the output zones and multiply them by
@@ -339,7 +348,7 @@ def randOutputMolecules(input_molecules,
             max_output_size = 10
         else:
             max_output_size = 16
-        max_output_use_factor = max(1, max_output_size / output_lcm_formula.total_atoms())
+        max_output_use_factor = max(1, max_output_size / output_lcm_formula.num_atoms())
 
         # Figure out the most we can multiply the formula by while still being constructable
         # Inefficient, but this isn't the part of the code that could run 1000 times
@@ -353,121 +362,194 @@ def randOutputMolecules(input_molecules,
         result.append(randMoleculeFromFormula(formula=output_formula))
     return result
 
+def randMolecules(num_molecules, total_size=None, elements=None):
+    '''Generate a specified # of random molecules. Optionally specify the elements to use and the
+    total size in # of atoms of all molecules combined.
+    '''
+    molecules = []
+    for i in range(num_molecules):
+        if total_size is not None:
+            remaining_molecules = num_molecules - i - 1
+            if i < num_molecules - 1:
+                # Leave at least 1 and at most 16 atoms per remaining input
+                size = random.randint(max(1, total_size - 16*remaining_molecules),
+                                      min(16, total_size - remaining_molecules))
+            else:
+                size = total_size
+            molecules.append(randMolecule(num_atoms=size, elements=elements))
+            total_size -= size
+        else:
+            molecules.append(randMolecule(elements=elements))
+    return molecules
 
-def randResearchLevel(difficulty=random.randint(0, 3),
+def randResearchLevel(difficulty=random.randint(0, 2),
                       elements=None,
-                      inputs=None,
+                      num_inputs=None,
                       fusion=True,
                       fission=True,
                       balanced=True,
                       rand_inputs=False,
                       large_output=False):
-    '''Return a string of the mission code.
+    '''Generate a random Research level and return the mission code.
     '''
-    level_json = {}
+    level = ResearchLevel()
+    level['difficulty'] = difficulty
 
     # Determine how many input zones we're using
-    if inputs is None:
-        inputs = random.randint(1, 2)
+    if num_inputs is None:
+        num_inputs = random.randint(1, 2)
 
-    # Generate molecules
-    input_molecules = []
-    total_inputs_size = randTotalInputsSize(difficulty=difficulty, min_size=inputs)
-    if inputs == 1:
-        input_molecules.append(randMolecule(num_atoms=total_inputs_size, elements=elements))
-    else:
-        size0 = random.randint(1, total_inputs_size - 1)
-        size1 = total_inputs_size - size0
-        input_molecules.append(randMolecule(num_atoms=size0, elements=elements))
-        input_molecules.append(randMolecule(num_atoms=size1, elements=elements))
+    # Generate input molecules
+    total_inputs_size = randTotalInputsSize(difficulty=difficulty, min_size=num_inputs)
+    input_molecules = randMolecules(num_inputs, total_size=total_inputs_size, elements=elements)
 
+    # Generate output molecules
     output_molecules = randOutputMolecules(input_molecules, difficulty=difficulty)
-    # Randomly swap the inputs with the outputs to reduce bias of inputs -> outputs algorithm
+
+    # Randomly swap the inputs with the outputs to reduce bias from the inputs -> outputs algorithm
     # TODO: This will need fixing when --outputs gets added
-    if ((inputs is None or len(input_molecules) == len(output_molecules))
+    if ((num_inputs is None or len(input_molecules) == len(output_molecules))
         and random.randint(0, 1) == 1):
         input_molecules, output_molecules = output_molecules, input_molecules
 
-    # Generate Input Zones
-    input_zones_json = {}
-    for z, molecule in enumerate(input_molecules):
-        zone_idx = z
+    # Add input zones to the level
+    for zone_idx, molecule in enumerate(input_molecules):
         if len(input_molecules) == 1:
             zone_idx = random.randint(0, 1)
 
-        input_zone_json = {}
-        num_molecules = 1 # TODO: random inputs
-        molecules_list = []
-        for _ in range(num_molecules):
-            molecule_json = {}
-            molecule_json['molecule'] = molecule.get_json_str()
-            molecule_json['count'] = 12
-            molecules_list.append(molecule_json)
-        input_zone_json['inputs'] = molecules_list
-        input_zones_json[str(zone_idx)] = input_zone_json
-    level_json['input-zones'] = input_zones_json
+        input_zone_json = {'inputs':[]}
+        num_inputs = 1 # TODO: random inputs
+        for _ in range(num_inputs):
+            input_json = {}
+            input_json['molecule'] = molecule.get_json_str()
+            input_json['count'] = 12
+            input_zone_json['inputs'].append(input_json)
+        level['input-zones'][str(zone_idx)] = input_zone_json
 
-    # Generate Output Zones
-    output_zones_json = {}
-    for z, molecule in enumerate(output_molecules):
-        zone_idx = z
+    # Add output zones to the level
+    for zone_idx, molecule in enumerate(output_molecules):
         if len(output_molecules) == 1:
             zone_idx = random.randint(0, 1)
 
-        molecule_json = {}
-        molecule_json['molecule'] = molecule.get_json_str()
-        molecule_json['count'] = 10
+        output_zone_json = {}
+        output_zone_json['molecule'] = molecule.get_json_str()
+        output_zone_json['count'] = 10
 
-        output_zones_json[str(zone_idx)] = molecule_json
+        level['output-zones'][str(zone_idx)] = output_zone_json
 
-    level_json['output-zones'] = output_zones_json
-
-    # Set features of the level (bonders, fusers, etc.)
-    level_json['has-large-output'] = False
+    # Add 'features' to the level (bonders, fusers, etc.)
+    level['has-large-output'] = False
     if difficulty == 0:
-        level_json['bonder-count'] = 4
+        level['bonder-count'] = 4
     else:
-        level_json['bonder-count'] = random.choice([2, 4, 4, 8]) # Bias toward 4 bonders
-    level_json['has-sensor'] = random.randint(0, 1) == 1 # Sure, why not
-    level_json['has-fuser'] = False
-    level_json['has-splitter'] = False
-    level_json['has-teleporter'] = difficulty >= 2 and random.randint(0, 1) == 1
+        level['bonder-count'] = random.choice([2, 4, 4, 8]) # Bias toward 4 bonders
+    level['has-sensor'] = random.randint(0, 1) == 1 # Sure, why not
+    level['has-fuser'] = False
+    level['has-splitter'] = False
+    level['has-teleporter'] = difficulty >= 2 and random.randint(0, 1) == 1
 
-    # Level meta-data
-    level_json['type'] = 'research'
-    level_json['name'] = 'RandomlyGenerated'
-    level_json['author'] = 'Zig'
-    level_json['difficulty'] = difficulty
+    # Return the mission code
+    return level.getCode()
 
-    raw_json = json.dumps(level_json)
+def randProductionLevel(difficulty=random.randint(0, 2),
+                        elements=None,
+                        num_inputs=None):
+    '''Create a random Production level.
+    Args:
+        difficulty: Max 3, defaults to 0-2. Controls total size of molecules.
+        elements: The elements to select from for the level.
+        num_inputs: The number of input zones to use (1-3).
+    '''
+    level = ProductionLevel()
 
-    # Convert to mission code - gzip then b64 the result
-    out = StringIO.StringIO()
-    with gzip.GzipFile(fileobj=out, mode="w") as f:
-        f.write(raw_json)
-    mission_code = base64.b64encode(out.getvalue())
+    level['difficulty'] = difficulty
 
-    return mission_code
+    # Determine how many input zones we're using
+    if num_inputs is None:
+        num_inputs = random.choice([1, 2, 2, 3]) # bias toward 2 inputs
 
-def randProductionLevel():
-    pass # TODO
+    # Generate input molecules
+    total_inputs_size = randTotalInputsSize(difficulty=difficulty, min_size=num_inputs)
+    input_molecules = randMolecules(num_inputs, total_size=total_inputs_size, elements=elements)
+
+    # Generate output molecules (up to 3 since this is a production level)
+    output_molecules = randOutputMolecules(input_molecules, difficulty=difficulty, max_outputs=3)
+
+    # Randomly swap the inputs with the outputs to reduce bias from the inputs -> outputs algorithm
+    # TODO: This will need fixing when --outputs gets added
+    if ((num_inputs is None or len(input_molecules) == len(output_molecules))
+        and random.randint(0, 1) == 1):
+        input_molecules, output_molecules = output_molecules, input_molecules
+
+    # Add the random input zone to the level
+    input_zone_json = {'inputs':[]}
+    input_json = {}
+    input_json['molecule'] = input_molecules[0].get_json_str()
+    input_json['count'] = 12
+    input_zone_json['inputs'].append(input_json)
+    level['random-input-zones']['0'] = input_zone_json
+
+    # Add the fixed input zones to the level
+    for zone_idx, molecule in enumerate(input_molecules[1:]):
+        level['fixed-input-zones'][str(zone_idx)] = molecule.get_json_str()
+
+    # Add the output zones
+    for zone_idx, molecule in enumerate(output_molecules):
+        output_zone_json = {}
+        output_zone_json['molecule'] = molecule.get_json_str()
+        output_zone_json['count'] = 40
+
+        level['output-zones'][str(zone_idx)] = output_zone_json
+
+    # Add features to level
+    # I'm leaving 'max-reactors' at its default 6 as set in ProductionLevel's initialization
+    level['terrain'] = random.randint(0, 4)
+    # By convention, if the inputs contain greek elements the terrain is set to Flidais
+    for molecule in input_molecules:
+        for element in molecule.formula.keys():
+            if element in ('Θ', 'Ω', 'Σ', 'Δ'):
+                level['terrain'] = 5
+                break
+
+    # No point having assembly/disassembly if any other reactors are available, and there's a max of
+    # 4 types of reactors available anyway, probably for this reason
+    if random.randint(1, 50) == 1:
+        level['has-assembly'] = True
+        level['has-disassembly'] = True
+    else:
+        level['has-starter'] = True # In case anyone wants to comment their code by using a
+                                        # strictly worse reactor
+        level['has-advanced'] = random.randint(0, 1) == 1 # Sensor reactor; 50%
+        level['has-nuclear'] = False # TODO
+        level['has-superbonder'] = random.randint(1, 4) == 1 # 25%
+
+    level['has-recycler'] = random.randint(0, 1) == 1
+
+    return level.getCode()
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--view', action='store_true',
+                        help="Open Cearn's mission viewer in the browser")
+    parser.add_argument('--research', action='store_true',
+                        help="Dummy flag; Research levels are generated by default anyway.")
+    parser.add_argument('--production', action='store_true',
+                        help="Generate a Production level instead of a Research level.")
+    parser.add_argument('--difficulty', '-d', type=int, action="store",
+                        choices=[0, 1, 2, 3], default=random.randint(0, 2),
+                        help="Set the difficulty of the level.")
     parser.add_argument('--lanky', action="store_true",
                         help="Set difficulty to max")
-    parser.add_argument('--difficulty', '-d', type=int, action="store", default=random.randint(0,3),
-                        help="Set difficulty to max")
-    parser.add_argument('--imlazy', action='store_true',
-                        help="Open Cearn's mission viewer in the browser")
     parser.add_argument('--basic', action='store_true',
                         help="Use only 'basic' elements, one for each of the non-0 bond counts:" \
                              + "[H, O, B, C, N, S, Cl, Os]")
     parser.add_argument('--elements', action='store', nargs='*', type=str,
                         help="Select only from the specified elements in creating the level." \
                              + "Not currently guaranteed to use all elements.")
-    parser.add_argument('--inputs', action='store', type=int, default=None,
-                        help="The number of input zones to use (1 or 2).")
+    parser.add_argument('--inputs', action='store', type=int,
+                        choices=[1, 2, 3],
+                        help="The # of inputs to use.")
     args = parser.parse_args()
 
     difficulty = args.difficulty
@@ -475,18 +557,25 @@ if __name__ == '__main__':
         difficulty = 3
     elements = None
     if args.elements:
-        elements = args.elements
+        # Allow specifying elements by atomic #, because why not
+        elements = [elements_data.symbols[int(e)] if e.isdigit() else e for e in args.elements]
     elif args.basic:
         elements = elements_data.basic_elements
 
-    if args.inputs not in (None, 1, 2):
-        raise argparse.ArgumentTypeError('# of inputs must be 1 or 2')
+    if args.inputs == 3 and not args.production:
+        raise argparse.ArgumentTypeError('Too many inputs; did you mean to add --production ?')
 
+    # Generate the level
+    if args.production:
+        code = randProductionLevel(difficulty=difficulty,
+                                   elements=elements,
+                                   num_inputs=args.inputs)
+    else:
+        code = randResearchLevel(difficulty=difficulty,
+                                 elements=elements,
+                                 num_inputs=args.inputs)
 
-    code = randResearchLevel(difficulty=difficulty,
-                             elements=elements,
-                             inputs=args.inputs)
-    if args.imlazy:
+    if args.view:
         import webbrowser
         webbrowser.open('http://coranac.com/spacechem/mission-viewer?mode=editor&code=' + code)
     print code

@@ -1,12 +1,17 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import base64
 import collections
 import fractions
+import gzip
+import json
+import StringIO
 
 import elements_data
 
-# Confusingly, Counter's list-ifier is already called 'elements()'
 class Formula(collections.Counter):
-    # Have to override Counter's add method or else adding two Formula's will make a Counter
+    # Have to override Counter's add method or else adding two Formulas will make a Counter
     def __add__(self, other):
         result = Formula()
         for k in self.keys():
@@ -19,8 +24,14 @@ class Formula(collections.Counter):
         return Formula({i: other * self[i] for i in self.keys()})
     __rmul__ = __mul__
 
-    def total_atoms(self):
+    # I'd like to override __len__ but that breaks the underlying Counter class
+    def num_atoms(self):
         return sum(self.values())
+
+    # Confusingly, Counter's iterable-maker is already called 'elements()';
+    # alias it to 'atoms' to avoid confusing code
+    def atoms(self):
+        return self.elements()
 
     def divide_by_gcd(self):
         '''Divide this formula's numeric values by their GCD.
@@ -39,19 +50,20 @@ class Formula(collections.Counter):
                 if self[element] != 1:
                     result += '~' + str(self[element]).rjust(2, '0')
         return result
+    __str__ = get_json_str # For debugging convenience
 
     def isValid(self):
         '''Check if it's possible to form a molecule with this formula within a 4x4 grid.
         '''
         # Verify size constraints for a basic input/output
-        if not (1 <= self.total_atoms() <= 16):
+        if not (1 <= self.num_atoms() <= 16):
             return False
 
-        # We'll calculate validity based on whether there are enough bonds in the atom list to form a
-        # minimally-connected molecule (no cycles in the graph)
+        # We'll calculate validity based on whether there are enough bonds in the atom list to form
+        # a minimally-connected molecule (no cycles in the graph).
         # In order not to be fooled by extraneous max bond counts that can't be used to connect the
-        # graph, consider a minimally-connected 16-atom graph, constructed by adding middle atoms first
-        # and always using an element with exactly the bond count needed for its new connections.
+        # graph, consider a minimally-connected 16-atom graph, constructed by adding middle atoms
+        # first and always using an element with exactly the bond count needed for its new connections.
         #  H   H   H   H
         #  |   |   |   |
         #  O - C - C - O
@@ -67,21 +79,23 @@ class Formula(collections.Counter):
         # then a molecule cannot be constructed.
         # It is also required that each atom be able to form at least 1 bond if the molecule is not
         # size 1.
-        total_atoms = self.total_atoms()
-        total_connections = 0
+        num_atoms = self.num_atoms()
+        usable_connections = 0
         max_connections_by_idx = [4, 4, 3, 3, 2, 2, 2, 2] + [1]*8
         i = 0
-        for element in sorted(self.keys(), key=lambda x: elements_data.max_bonds[elements_data.atomic_numbers[x]], reverse=True):
+        for element in sorted(self.keys(),
+                              key=lambda x: elements_data.max_bonds[elements_data.atomic_numbers[x]],
+                              reverse=True):
             element_max_bonds = elements_data.max_bonds[elements_data.atomic_numbers[element]]
             # If there's a noble gas and more than 1 atom, it's invalid
-            if total_atoms > 1 and element_max_bonds == 0:
+            if num_atoms > 1 and element_max_bonds == 0:
                 return False
-            # Count 'useful' connections
+            # Count usable connections
             for i in range(self[element]):
-                total_connections += min(element_max_bonds, max_connections_by_idx[i])
+                usable_connections += min(element_max_bonds, max_connections_by_idx[i])
                 i += 1
-        # For N atoms there are min N-1 connections, each contributing min 1 bond to each of two atoms
-        return total_connections >= 2*(total_atoms - 1)
+        # For N atoms there are min N-1 bonds, and we've double-counted our usable connections
+        return usable_connections >= 2*(num_atoms - 1)
 
 
 class GridPos:
@@ -163,6 +177,7 @@ class Molecule:
         self.formula = Formula() # a Counter object for the constituent elements
         self.open_bonds = 0 # A rough meausure of the # of open bonds available
                             # Only needs to be correct insofar as 0 vs 1 vs many
+        self.name = 'Randite'
 
     def __str__(self):
         result = ''
@@ -198,8 +213,7 @@ class Molecule:
         return len(self.atoms)
 
     def get_json_str(self):
-        result = "Randite;"
-        result += self.formula.get_json_str() + ';'
+        result = self.name + ';' + self.formula.get_json_str() + ';'
         for atom in self.atoms:
             result += atom.get_json_str() + ';'
         return result
@@ -261,3 +275,63 @@ class Molecule:
         self.formula[atom.symbol] += 1
 
         self.atoms.append(atom)
+
+class Level:
+    def __init__(self):
+        self.dict = {}
+        self.dict['name'] = 'RandomlyGenerated'
+        self.dict['author'] = "Zig's Random"
+        self.dict['difficulty'] = 0
+
+    def __getitem__(self, item):
+        return self.dict[item]
+
+    def __setitem__(self, item, val):
+        self.dict[item] = val
+
+    def __str__(self):
+        return json.dumps(self.dict)
+
+    def getCode(self):
+        '''Get the mission code - gzip then b64 the level json.
+        '''
+        out = StringIO.StringIO()
+        with gzip.GzipFile(fileobj=out, mode="w") as f:
+            f.write(json.dumps(self.dict))
+        return base64.b64encode(out.getvalue())
+
+class ResearchLevel(Level):
+    def __init__(self):
+        Level.__init__(self)
+        self.dict['type'] = 'research'
+        self.dict['input-zones'] = {}
+        self.dict['output-zones'] = {}
+
+        # Features of the level
+        self.dict['bonder-count'] = 0
+        self.dict['has-sensor'] = False
+        self.dict['has-fuser'] = False
+        self.dict['has-splitter'] = False
+        self.dict['has-teleporter'] = False
+
+        self.dict['has-large-output'] = False
+
+class ProductionLevel(Level):
+    def __init__(self):
+        Level.__init__(self)
+        self.dict['type'] = 'production'
+        self.dict['terrain'] = 0
+        self.dict['random-input-zones'] = {} # Max 1 random
+        self.dict['fixed-input-zones'] = {} # Max 2 fixed
+        self.dict['output-zones'] = {} # Max 3 outputs
+
+        self.dict['max-reactors'] = 6 # Default maximum allowed
+
+        self.dict['has-starter'] = False
+        self.dict['has-assembly'] = False
+        self.dict['has-disassembly'] = False
+        self.dict['has-advanced'] = False # Sensor reactor
+        self.dict['has-nuclear'] = False
+        self.dict['has-superbonder'] = False
+
+        self.dict['has-recycler'] = False
