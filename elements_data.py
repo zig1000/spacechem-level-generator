@@ -1,145 +1,163 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import periodictable
+from helpers import Element
 
-# Default elements by bond count: He, H, O, B, C, N, S, Cl, Os
-# We only really need other elements if we're making a fusion level
-default_bond_count_elements = { 0:'He', 1:'H', 2:'O', 3:'B', 4:'C', 5:'N', 6:'S', 7:'Cl', 8:'Os' }
+elements = [Element(1, 'H', 1),
+            Element(2, 'He', 0),
+            Element(3, 'Li', 1),
+            Element(4, 'Be', 2),
+            Element(5, 'B', 3),
+            Element(6, 'C', 4),
+            Element(7, 'N', 2),
+            Element(8, 'O', 2),
+            Element(9, 'F', 1),
+            Element(10, 'Ne', 0),
+            Element(11, 'Na', 1),
+            Element(12, 'Mg', 2),
+            Element(13, 'Al', 4),
+            Element(14, 'Si', 4),
+            Element(15, 'P', 5),
+            Element(16, 'S', 6),
+            Element(17, 'Cl', 7),
+            Element(18, 'Ar', 0),
+            Element(19, 'K', 1),
+            Element(20, 'Ca', 2),
+            Element(21, 'Sc', 3),
+            Element(22, 'Ti', 4),
+            Element(23, 'V', 5),
+            Element(24, 'Cr', 6),
+            Element(25, 'Mn', 7),
+            Element(26, 'Fe', 6),
+            Element(27, 'Co', 5),
+            Element(28, 'Ni', 4),
+            Element(29, 'Cu', 4),
+            Element(30, 'Zn', 2),
+            Element(31, 'Ga', 3),
+            Element(32, 'Ge', 4),
+            Element(33, 'As', 5),
+            Element(34, 'Se', 6),
+            Element(35, 'Br', 7),
+            Element(36, 'Kr', 0),
+            Element(37, 'Rb', 1),
+            Element(38, 'Sr', 2),
+            Element(39, 'Y', 3),
+            Element(40, 'Zr', 4),
+            Element(41, 'Nb', 5),
+            Element(42, 'Mo', 6),
+            Element(43, 'Tc', 7),
+            Element(44, 'Ru', 8),
+            Element(45, 'Rh', 6),
+            Element(46, 'Pd', 4),
+            Element(47, 'Ag', 3),
+            Element(48, 'Cd', 2),
+            Element(49, 'In', 3),
+            Element(50, 'Sn', 4),
+            Element(51, 'Sb', 5),
+            Element(52, 'Te', 6),
+            Element(53, 'I', 7),
+            Element(54, 'Xe', 0),
+            Element(55, 'Cs', 1),
+            Element(56, 'Ba', 2),
+            Element(57, 'La', 3),
+            Element(58, 'Ce', 4),
+            Element(59, 'Pr', 4),
+            Element(60, 'Nd', 3),
+            Element(61, 'Pm', 3),
+            Element(62, 'Sm', 3),
+            Element(63, 'Eu', 3),
+            Element(64, 'Gd', 3),
+            Element(65, 'Tb', 4),
+            Element(66, 'Dy', 3),
+            Element(67, 'Ho', 3),
+            Element(68, 'Er', 3),
+            Element(69, 'Tm', 3),
+            Element(70, 'Yb', 3),
+            Element(71, 'Lu', 3),
+            Element(72, 'Hf', 4),
+            Element(73, 'Ta', 5),
+            Element(74, 'W', 6),
+            Element(75, 'Re', 7),
+            Element(76, 'Os', 8),
+            Element(77, 'Ir', 6),
+            Element(78, 'Pt', 6),
+            Element(79, 'Au', 5),
+            Element(80, 'Hg', 4),
+            Element(81, 'Tl', 3),
+            Element(82, 'Pb', 4),
+            Element(83, 'Bi', 5),
+            Element(84, 'Po', 6),
+            Element(85, 'At', 7),
+            Element(86, 'Rn', 0),
+            Element(87, 'Fr', 1),
+            Element(88, 'Ra', 2),
+            Element(89, 'Ac', 3),
+            Element(90, 'Th', 4),
+            Element(91, 'Pa', 5),
+            Element(92, 'U', 6),
+            Element(93, 'Np', 7),
+            Element(94, 'Pu', 7),
+            Element(95, 'Am', 6),
+            Element(96, 'Cm', 4),
+            Element(97, 'Bk', 4),
+            Element(98, 'Cf', 4),
+            Element(99, 'Es', 3),
+            Element(100, 'Fm', 3),
+            Element(101, 'Md', 3),
+            Element(102, 'No', 3),
+            Element(103, 'Lr', 3),
+            Element(104, 'Rf', 4),
+            Element(105, 'Db', 5),
+            Element(106, 'Sg', 6),
+            Element(107, 'Bh', 7),
+            Element(108, 'Hs', 8),
+            Element(109, 'Mt', 6),
 
-basic_elements = [default_bond_count_elements[c] for c in range(1, 9)] # Skip noble gases
+            # Greek Elements
+            Element(200, 'Θ', 12),
+            Element(201, 'Ω', 12),
+            Element(202, 'Σ', 12),
+            Element(203, 'Δ', 12)
 
-max_bonds = {
-    1: 1,
-    2: 0,
-    3: 1,
-    4: 2,
-    5: 3,
-    6: 4,
-    7: 5,
-    8: 2,
-    9: 1,
-    10: 0,
-    11: 1,
-    12: 2,
-    13: 4,
-    14: 4,
-    15: 5,
-    16: 6,
-    17: 7,
-    18: 0,
-    19: 1,
-    20: 2,
-    21: 3,
-    22: 4,
-    23: 5,
-    24: 6,
-    25: 7,
-    26: 6,
-    27: 5,
-    28: 4,
-    29: 4,
-    30: 2,
-    31: 3,
-    32: 4,
-    33: 5,
-    34: 6,
-    35: 7,
-    36: 0,
-    37: 1,
-    38: 2,
-    39: 3,
-    40: 4,
-    41: 5,
-    42: 6,
-    43: 7,
-    44: 8,
-    45: 6,
-    46: 4,
-    47: 3,
-    48: 2,
-    49: 3,
-    50: 4,
-    51: 5,
-    52: 6,
-    53: 7,
-    54: 0,
-    55: 1,
-    56: 2,
-    57: 3,
-    58: 4,
-    59: 4,
-    60: 3,
-    61: 3,
-    62: 3,
-    63: 3,
-    64: 3,
-    65: 4,
-    66: 3,
-    67: 3,
-    68: 3,
-    69: 3,
-    70: 3,
-    71: 3,
-    72: 4,
-    73: 5,
-    74: 6,
-    75: 7,
-    76: 8,
-    77: 6,
-    78: 6,
-    79: 5,
-    80: 4,
-    81: 3,
-    82: 4,
-    83: 5,
-    84: 6,
-    85: 7,
-    86: 0,
-    87: 1,
-    88: 2,
-    89: 3,
-    90: 4,
-    91: 5,
-    92: 6,
-    93: 7,
-    94: 7,
-    95: 6,
-    96: 4,
-    97: 4,
-    98: 4,
-    99: 3,
-    100: 3,
-    101: 3,
-    102: 3,
-    103: 3,
-    104: 4,
-    105: 5,
-    106: 6,
-    107: 7,
-    108: 8,
-    109: 6,
+            # Australium
+            # Not included because it has the same properties as gold and will cause problems
+            #Element(-79, '[Insert picture of kangaroo]', 5)
+            ]
 
-    # Greek elements
-    200: 12,
-    201: 12,
-    202: 12,
-    203: 12
+non_noble_elements = [e for e in elements if e.max_bonds != 0]
 
-    # Australium
-    # Not included for now because it follows same fission rules as gold which will be problematic
-    #204: 5
-}
+# The 'familiar' element for each particular bond count from 0-8 (author's opinion)
+basic_elements = [e for e in elements if e.symbol in ['He', 'H', 'O', 'B', 'C',
+                                                      'N', 'S', 'Cl', 'Os']]
 
-# Symbol -> atomic # lookups
-atomic_numbers = { periodictable.elements[i].symbol: i for i in range(1, 110) }
-atomic_numbers.update({ 'Θ':200, 'Ω':201, 'Σ':202, 'Δ':203 })
-symbols = { atomic_numbers[s]: s for s in atomic_numbers.keys() }
+# A Class for O(1) look up of elements via either their atomic number or their symbol
+# It's only used for handling user-input for now, but it'll come in much more handy later with
+# fission/fusion
+class ElementDict:
+    '''A set of Elements, with O(1) atomic # or symbol lookup.
+    '''
+    def __init__(self, elements):
+        self.atomic_num_element_dict = {}
+        self.symbol_element_dict = {}
+        for element in elements:
+            self.atomic_num_element_dict[element.atomic_num] = element
+            self.symbol_element_dict[element.symbol] = element
 
-# Commonly used list:
-non_noble_symbols = [s for n, s in symbols.items() if max_bonds[n] != 0]
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self.atomic_num_element_dict[key]
+        elif isinstance(key, str):
+            return self.symbol_element_dict[key]
+        else:
+            raise TypeError("Elements must be looked up by atomic # or symbol; received {0}".format(key))
 
-# Unused for now but could be useful
-elements_with_bond_count = { k: [e for e in max_bonds.keys()
-                                 if max_bonds[e] == k]
-                             for k in range(9) + [12] }
+    def __len__(self):
+        return len(self.atomic_num_element_dict.values())
+
+    def __iter__(self):
+        return iter(self.atomic_num_element_dict.values())
+
+    def __str__(self):
+        return '[' + ', '.join([str(e) for e in self]) + ']'
+
+elements_dict = ElementDict(elements)
