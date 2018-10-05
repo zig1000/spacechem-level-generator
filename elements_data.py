@@ -121,7 +121,11 @@ elements = [Element(1, 'H', 1),
 
             # Australium
             # Not included because it has the same properties as gold and will cause problems
-            #Element(-79, '[Insert picture of kangaroo]', 5)
+            #Element(-79, '<Insert kangaroo>', 5)
+
+            # Element ?
+            # TODO: Add support for generating levels that use '?'.
+            #Element(0, '?', 12)
             ]
 
 non_noble_elements = [e for e in elements if e.max_bonds != 0]
@@ -130,7 +134,7 @@ non_noble_elements = [e for e in elements if e.max_bonds != 0]
 basic_elements = [e for e in elements if e.symbol in ['He', 'H', 'O', 'B', 'C',
                                                       'N', 'S', 'Cl', 'Os']]
 
-# A Class for O(1) look up of elements via either their atomic number or their symbol
+# A Class for O(1) lookup of elements via either their atomic number or their symbol
 # It's only used for handling user-input for now, but it'll come in much more handy later with
 # fission/fusion
 class ElementDict:

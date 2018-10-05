@@ -1,24 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-'''Maybe allow as args which tools the reactor contains (fusion laser, fission
-laser, etc) and have the generated molecules be based on those.
-
-TODO:
-    - add --print option
-    - add element reuse factor to polymers
-    - add large output zones
-    - add generation of 'nice' molecule from a formula
-    - generalize polymerization to tileable shapes
-    - add chance of perturbations to symmetrical molecules (e.g. ammonia has 1 of 4 twins deleted)
-    - create molecules with mixed methods, e.g. symmetrical molecule with one part replaced by a
-      polymer
-    - add fusion/fission
-    - add support for generating fully-bonded molecules (generate molecule then mutate elements to
-      match bond counts?)
-    - add support for waste-generating levels (need to calculate waste and limit it to ~40 at most)
-'''
-
 import argparse
 import copy
 import fractions
@@ -26,6 +8,51 @@ import random
 
 import elements_data
 from helpers import *
+
+class RandomizationSettings(argparse.Namespace):
+    '''Container class for args affecting the level randomization.'''
+    pass
+
+class ElementPicker:
+    '''Class to assist with randomly picking elements from a given selection, with a chance to
+    reuse a previously picked element which is independent of the number of available elements.
+    Args:
+        elements: The collection of elements to choose from. Default all non-noble elements.
+        prob_new_element: The probability of picking a previously unpicked element. Default 0.5
+        prob_decay_factor: Each time a new element is picked other than the first, prob_new_element
+                           is multiplied by this factor. Default 1 (no decay).
+    '''
+    def __init__(self, elements=None, prob_new_element=0.5, prob_decay_factor=1):
+        if elements is None:
+            elements = elements_data.non_noble_elements
+        self.used_elements = []
+        # A shallow copy is sufficient since we never mutate Elements
+        self.unused_elements = list(elements)
+        self.prob_new_element = prob_new_element
+        self.prob_decay_factor = prob_decay_factor
+
+    def pick(self, min_bond_count=0):
+        '''Pick an element, optionally with a minimum specified bond count.'''
+        if min_bond_count > 0:
+            valid_used_elements = [e for e in self.used_elements if e.max_bonds >= min_bond_count]
+            valid_unused_elements = [e for e in self.unused_elements if e.max_bonds >= min_bond_count]
+        else:
+            valid_used_elements = self.used_elements
+            valid_unused_elements = self.unused_elements
+
+        if (valid_unused_elements and random.random() < self.prob_new_element) \
+           or not valid_used_elements:
+            # If this wasn't the first element picked, decay the new element probability
+            if self.used_elements:
+                self.prob_new_element *= self.prob_decay_factor
+
+            element = random.choice(valid_unused_elements)
+            self.used_elements.append(element)
+            self.unused_elements.remove(element)
+        else:
+            element = random.choice(valid_used_elements)
+        return element
+
 
 def min_split_formula(formula, max_formulas=None):
     '''Given a formula, split it into an integer linear combination of valid (4x4 zone) formulas,
@@ -48,7 +75,7 @@ def min_split_formula(formula, max_formulas=None):
     - N is the LCM of the highest count element
     - f is the maximum # of formulas allowed
 
-    The algorithm isn't perfect, e.g. C3H4O2 should give 2*H2O + 3*C, but instead gives
+    The pure algorithm isn't perfect, e.g. C3H4O2 should give 2*H2O + 3*C, but instead gives
     2*CH2O + 1*C. A partial fix is implemented; in cases where the second formula contains a lone
     element, that element is removed from the first formula when possible (fixing the example but
     not more complex cases). However this is probably an NP-hard ILP anyway so this approximation is
@@ -118,47 +145,30 @@ def min_split_formula(formula, max_formulas=None):
 
 def randFormula(num_atoms=None,
                 elements=None,
-                element_reuse_factor=0.6,
-                nobles=False):
+                element_diversity_factor=0.6):
     '''Generate a random molecule formula. Doesn't make nice molecules so currently unused.'''
     if num_atoms is None: # If size isn't specified keep adding atoms with 75% probability
         num_atoms = 1
-        while num_atoms <= 16 and random.randint(1, 4) != 1:
+        while num_atoms <= 16 and random.random() < 0.75:
             num_atoms += 1
 
-    # Restrict noble gases unless otherwise specified
-    if elements is None:
-        if num_atoms == 1 and nobles:
-            elements = elements_data.elements
-        else:
-            elements = elements_data.non_noble_elements
+    # ElementPicker defaults to non-nobles, but we'll allow them if num_atoms is 1
+    if elements is None and num_atoms == 1:
+        elements = elements_data.elements
 
     formula = Formula()
     tries = 0
     while not formula.is_valid():
         if tries == 500:
             raise ValueError(("Could not generate valid formula with {0} atoms from {1} in 500 "
-                             + "tries.").format(num_atoms, elements))
+                              + "tries.").format(num_atoms, elements))
 
         formula = Formula()
-        # Bias the algorithm to increase the chance of reusing elements within a molecule
-        used_elements = []
-        unused_elements = copy.copy(elements)
-        prob_new_element = 1
+        element_picker = ElementPicker(elements,
+                                       prob_new_element=element_diversity_factor,
+                                       prob_decay_factor=element_diversity_factor)
         for _ in range(num_atoms):
-            if random.uniform(0, 1) < prob_new_element and len(unused_elements) != 0:
-                # Use a new element and move it to the used list
-                i = random.randint(0, len(unused_elements) - 1)
-                # Some finagling to make this an O(1) random pop
-                unused_elements[i], unused_elements[-1] = unused_elements[-1], unused_elements[i]
-                element = unused_elements.pop()
-                used_elements.append(element)
-                # Exponentially decrease the probability of getting a new element
-                prob_new_element *= element_reuse_factor
-            else:
-                # Used element
-                element = random.choice(used_elements)
-            formula[element] += 1
+            formula[element_picker.pick()] += 1
         tries += 1
 
     return formula
@@ -259,7 +269,7 @@ def randMoleculeFromFormula(formula):
                          if molecule[neighbor] is not None
                          and molecule[neighbor].remaining_bonds() > 0]
             for i, neighbor in enumerate(neighbors):
-                if random.randint(0, 1):
+                if random.random() < 0.5:
                     if neighbor.col < atom.col:
                         atom.left_bonds += 1
                         neighbor.right_bonds += 1
@@ -277,75 +287,78 @@ def randMoleculeFromFormula(formula):
 
         return molecule
 
-def randMolecule(num_atoms=None,
-                 elements=None):
-    '''Generate a random molecule. This doesn't make nice molecules so it is now unused.'''
+def randMolecule(num_atoms=None, elements=None):
+    '''Generate a random molecule. This doesn't make nice molecules so it is currently unused.'''
     formula = randFormula(num_atoms=num_atoms, elements=elements)
     return randMoleculeFromFormula(formula)
 
 def randFullyBondedMolecule():
     pass # TODO
 
-def randSymmetricalMolecule(elements=None,
-                            difficulty=None,
-                            large_output=False):
+def randSymmetricalMolecule(settings):
     '''Generate a random symmetric molecule.
     It can either be rotationally symmetrical around a point (90 or 180 degree rotational symmetry),
     or else it can be reflexively symmetrical across an axis.
-
-    TBA: Specified size/complexity of molecule
     '''
+    elements = settings.elements
     if elements is None:
         elements = elements_data.elements
     elements = [e for e in elements if e.max_bonds >= 4] # TODO: FIX ME
 
-    # TODO: Use difficulty, fix this
+    element_picker = ElementPicker(elements=elements, prob_new_element=0.5)
 
-    num_rows = 4 + 4*large_output
+    # Calculate a minimum size for our molecule based on difficulty
+    target_num_atoms = 2*(settings.difficulty + 1) + 4*settings.large_output
 
-    # Randomly decide on a function to determine the 'twins' of any given grid position.
+    # Randomly decide on a symmetry to determine the 'twins' of any given grid position.
     choice = random.randint(1, 6) # not 0-indexed, sue me
     if choice == 1:
         # rotational symmetry around the center of the grid
-        if random.randint(0, 1) == 0:
+        if random.random() < 0.5:
             symmetry_type = 'rotate 180'
         else:
             symmetry_type = 'rotate 90'
         # Invalid GridPos, but convenient
-        _pivot = GridPos(1.5 + 2*large_output, 1.5, large_output=large_output)
+        _pivot = GridPos(1.5 + 2*settings.large_output, 1.5,
+                         large_output=settings.large_output)
     elif choice == 2:
         # rotational symmetry (180-degree) around the center of one of the grid's cell edges
         symmetry_type = 'rotate 180'
         # We'll randomly pick one of the four edges near the middle of the zone
-        _pivot = random.choice([GridPos(1 + 2*large_output, 1.5, large_output=large_output),
-                                GridPos(1.5 + 2*large_output, 2, large_output=large_output),
-                                GridPos(2 + 2*large_output, 1.5, large_output=large_output),
-                                GridPos(1.5 + 2*large_output, 1, large_output=large_output)])
+        _pivot = random.choice([GridPos(1 + 2*settings.large_output, 1.5,
+                                        large_output=settings.large_output),
+                                GridPos(1.5 + 2*settings.large_output, 2,
+                                        large_output=settings.large_output),
+                                GridPos(2 + 2*settings.large_output, 1.5,
+                                        large_output=settings.large_output),
+                                GridPos(1.5 + 2*settings.large_output, 1,
+                                        large_output=settings.large_output)])
     elif choice == 3:
         # rotational symmetry around the center of one of the grid's middle cells (180 or 90)
-        _pivot = GridPos(random.randint(1, 2) + 2*large_output,
-                         random.randint(1, 2), large_output=large_output)
-        if random.randint(0, 1) == 0:
+        _pivot = GridPos(random.randint(1, 2) + 2*settings.large_output, random.randint(1, 2),
+                         large_output=settings.large_output)
+        if random.random() < 0.5:
             symmetry_type = 'rotate 180'
         else:
             symmetry_type = 'rotate 90'
     elif choice == 4:
         # Horizontal reflexive symmetry (through a vertical axis)
         symmetry_type = 'horizontal'
-        if random.randint(0, 1) == 0:
+        if random.random() < 0.5:
             # Vertical center axis of the zone
             axis = 1.5
         else:
             # Vertical center axis of either of the two middle columns
-            axis = random.randint(1,2)
+            axis = random.randint(1, 2)
 
         def twins_raw(pos):
             '''Given a position return its symmetrical mappings.'''
-            return [GridPos(pos.row, int(2*axis - pos.col), large_output=large_output)]
+            return [GridPos(pos.row, int(2*axis - pos.col),
+                            large_output=settings.large_output)]
     elif choice == 5:
         # Vertical reflexive symmetry (through a horizontal axis)
         symmetry_type = 'vertical'
-        if random.randint(0, 1) == 0:
+        if random.random() < 0.5:
             # Horizontal center axis of the zone
             axis = 1.5
         else:
@@ -354,40 +367,43 @@ def randSymmetricalMolecule(elements=None,
 
         def twins_raw(pos):
             '''Given a position return its symmetrical mappings.'''
-            return [GridPos(int(2*axis - pos.row), pos.col, large_output=large_output)]
+            return [GridPos(int(2*axis - pos.row), pos.col,
+                            large_output=settings.large_output)]
     elif choice == 6:
         # Diagonal reflexive symmetry across either diagonal of the 4x4 grid
         symmetry_type = 'diagonal'
 
-        if random.randint(0, 1) == 0:
+        if random.random() < 0.5:
             # top-left to bottom-right
             def twins_raw(pos):
                 '''Given a position return its symmetrical mappings.'''
-                return [GridPos(pos.col, pos.row, large_output=large_output)]
+                return [GridPos(pos.col, pos.row,
+                                large_output=settings.large_output)]
         else:
             # bottom-left to top-right
             def twins_raw(pos):
                 '''Given a position return its symmetrical mappings.'''
-                return [GridPos(3 - pos.col, 3 - pos.row, large_output=large_output)]
+                return [GridPos(3 - pos.col, 3 - pos.row,
+                                large_output=settings.large_output)]
 
     if symmetry_type == 'rotate 180':
         def twins_raw(pos):
             '''Given a position return its raw symmetrical mappings.'''
             return [GridPos(int(2*_pivot.row - pos.row),
                             int(2*_pivot.col - pos.col),
-                            large_output=large_output)]
+                            large_output=settings.large_output)]
     elif symmetry_type == 'rotate 90':
         # 90-degree rotational symmetry
         def twins_raw(pos):
             return [GridPos(int(_pivot.row + pos.col - _pivot.col),
                             int(_pivot.col + _pivot.row - pos.row),
-                            large_output=large_output),
+                            large_output=settings.large_output),
                     GridPos(int(2*_pivot.row - pos.row),
                             int(2*_pivot.col - pos.col),
-                            large_output=large_output),
+                            large_output=settings.large_output),
                     GridPos(int(_pivot.row + _pivot.col - pos.col),
                             int(_pivot.col + pos.row - _pivot.row),
-                            large_output=large_output)]
+                            large_output=settings.large_output)]
 
     def twins(pos):
         '''Return a posn's twins, cleaned of duplicates and None if any twin is out-of-bounds
@@ -401,45 +417,30 @@ def randSymmetricalMolecule(elements=None,
                 return []
         return _twins
 
-    # If available elements unspecified, draw from all non-Noble elements
-    if elements is None:
-        elements = elements_data.non_noble_elements
-    # Bias the algorithm to increase the chance of reusing elements within a molecule
-    used_elements = []
-    unused_elements = copy.copy(elements)
-    prob_new_element = 0.5 # Probability that any given selection is pulled from the unused elements
-
-    molecule = Molecule(large_output=large_output)
+    molecule = Molecule(large_output=settings.large_output)
     # TODO: Need proper methods for making symmetrical molecules of target sizes
     # For now just terminate as soon as the molecule has no unconnected atoms
-    while not molecule.is_connected():
+    while not molecule.is_connected() or len(molecule) < target_num_atoms:
         available_positions = molecule.open_positions()
         # Remove any positions that have no symmetrical twins inside the 4x4 grid
         for pos in copy.copy(available_positions):
             if twins(pos) is None:
                 available_positions.remove(pos)
 
+        # If can't symmetrically add any more atoms but we didn't reach our target size, settle
+        # TODO: rig symmetry choice, e.g. 90-degree rotational symmetry is limited to 9 atoms in
+        #       a large output which isn't enough for difficulty 3 as is.
         if not available_positions:
-            raise Exception("Created unconnected molecule:\n{0}".format(molecule))
-
-        # Pick a new element to add
-        if not used_elements \
-           or (unused_elements and random.uniform(0, 1) < prob_new_element):
-            # Use a new element and move it to the used list
-            i = random.randint(0, len(unused_elements) - 1)
-            # Some finagling to make this an O(1) random pop
-            unused_elements[i], unused_elements[-1] = unused_elements[-1], unused_elements[i]
-            element = unused_elements.pop()
-            used_elements.append(element)
-        else:
-            # Used element
-            element = random.choice(used_elements)
+            break
 
         # Grab a random position
         posn = random.choice(available_positions)
         posns = [posn] + twins(posn)
 
-        # Add each of the symmetrical atoms
+        # Pick a new element to add
+        element = element_picker.pick()
+
+        # Add an atom of that element to each of the symmetrical positions
         for p in posns:
             atom = Atom(element=element, pos=p)
 
@@ -465,25 +466,28 @@ def randSymmetricalMolecule(elements=None,
 
     return molecule
 
-def randPolymer(elements=None, difficulty=None, large_output=False):
+def randPolymer(settings):
     '''Generate a random polymer Molecule. That is, a molecule constructed mostly from repeating
     segments. Not necessarily symmetric.
 
     At least one of the allowed elements must have a max bond count of 2 or more.
     '''
-    if elements is None:
+    if settings.elements is None:
         elements = elements_data.non_noble_elements
     else:
-        elements = [e for e in elements if e.max_bonds != 0]
+        # Sanitize input
+        elements = [e for e in settings.elements if e.max_bonds != 0]
 
-    if difficulty is None:
-        difficulty = random.randint(0, 2)
+    element_picker = ElementPicker(elements=elements, prob_new_element=0.5)
 
-    molecule = Molecule(large_output=large_output)
+    molecule = Molecule(large_output=settings.large_output)
 
     # Randomize the size and quantity of segments (at least 2 segments)
-    segment_height = random.choice([1, 1, 1, 2]) # 25% chance of 2-atom tall segments
-    max_height = 4 + 4*large_output # Python, baby
+    if difficulty != 0 and random.random() < 0.25:
+        segment_height = 2
+    else:
+        segment_height = 1
+    max_height = 4 + 4*settings.large_output # Python, baby
     num_segments = random.randint(2, max_height/segment_height)
 
     # Determine which elements available to us allow an acceptable # of bonds to connect the
@@ -494,43 +498,35 @@ def randPolymer(elements=None, difficulty=None, large_output=False):
         min_core_bonds = 3
     else:
         min_core_bonds = 4
-    core_elements = [e for e in elements if e.max_bonds >= min_core_bonds]
-    if not core_elements:
-        raise Exception("Cannot construct polymer at difficulty {0} from elements {1}".format(difficulty, elements))
+    if not any(e.max_bonds >= min_core_bonds for e in elements):
+        raise Exception("Cannot construct polymer of difficulty {0} from elements {1}".format(difficulty, elements))
 
     # Construct the top segment, with the top row randomly based on #/size of segments
     top_row = random.randint(0, max_height - num_segments*segment_height)
     # Determine the column of the 'core' that connects the segments, biased towards the center.
     core_col = random.choice([0, 1, 1, 1, 2, 2, 2, 3])
 
-    # First core atom for the first segment
-    core_element = random.choice(core_elements)
-    core_atom = Atom(core_element, GridPos(top_row, core_col, large_output=large_output))
-    molecule.add_atom(core_atom)
+    for i in range(segment_height):
+        core_atom = Atom(element_picker.pick(min_bond_count=min_core_bonds),
+                         GridPos(top_row + i, core_col, large_output=settings.large_output))
 
-    # Add the second core atom if the segment is 2 atoms tall.
-    if segment_height == 2:
-        # at least 50% Chance to reuse the same element as the first core atom
-        if random.randint(0, 1) == 1:
-            core_element_2 = core_element
-        else:
-            core_element_2 = random.choice(core_elements)
-        core_atom_2 = Atom(core_element_2, GridPos(top_row + 1, core_col, large_output=large_output))
         # TODO: Second core atom of the segment shouldn't have to be directly
         #       bonded to the first core atom.
         #       E.g. C-O  is a valid 2-tall polymer segment with C and B as the chainable core.
         #              |
         #            B-O
         # But for now, we'll just single-bond them
-        core_atom_2.top_bonds = 1
-        molecule.add_atom(core_atom_2)
+        if i > 0:
+            core_atom.top_bonds = 1
 
-    # Randomly add atoms to the core, with the expected # of atoms added based on difficulty
-    if difficulty == 0:
+        molecule.add_atom(core_atom)
+
+    # Randomly attach atoms to the core, with the expected # of atoms added based on difficulty
+    if settings.difficulty == 0:
         num_atoms = random.randint(0, 1)
-    elif difficulty == 1:
+    elif settings.difficulty == 1:
         num_atoms = random.randint(2, 3)
-    elif difficulty == 2:
+    elif settings.difficulty == 2:
         num_atoms = random.randint(4, 5)
     else:
         num_atoms = 6 # Max for 2 segments
@@ -542,15 +538,16 @@ def randPolymer(elements=None, difficulty=None, large_output=False):
         if not available_positions:
             break
 
-        # TODO: Rig element selection to ensure we don't run out of bonds
-        atom = Atom(random.choice(elements), random.choice(available_positions))
+        # TODO: Rig min bonds of element to ensure num_atoms is met
+        atom = Atom(element_picker.pick(), random.choice(available_positions))
+
         # Randomly add bonds to neighbors, to a minimum of 1 bond
         neighbors = [p for p in atom.pos.neighbors() \
                      if molecule[p] is not None
                      and molecule[p].remaining_bonds() > 0]
         for i, neighbor in enumerate(neighbors):
             if atom.remaining_bonds() > 0 \
-               and (i == 0 or random.randint(0, 1) == 1):
+               and (i == 0 or random.random() < 0.5):
                 # TODO: store bonds/report nighbors better so I don't have to do this rigamarole
                 if neighbor.col < atom.col:
                     atom.left_bonds = 1
@@ -568,7 +565,7 @@ def randPolymer(elements=None, difficulty=None, large_output=False):
     segment = copy.deepcopy(molecule)
     # Add a bond to connect to the previous segment
     # TODO: Allow for more than a single core bond between segments
-    segment[GridPos(top_row, core_col, large_output=large_output)].top_bonds = 1
+    segment[GridPos(top_row, core_col, large_output=settings.large_output)].top_bonds = 1
     for i in range(num_segments - 1):
         segment.shift(rows=segment_height)
         molecule.add_molecule(copy.deepcopy(segment))
@@ -592,7 +589,7 @@ def randPolymer(elements=None, difficulty=None, large_output=False):
         if not available_positions:
             break
 
-        atom = Atom(random.choice(elements), random.choice(available_positions))
+        atom = Atom(element_picker.pick(), random.choice(available_positions))
 
         neighbors = [p for p in atom.pos.neighbors() \
                      if p.col == core_col # If num_extra_atoms is allowed to be 3 this is a problem
@@ -613,41 +610,28 @@ def randPolymer(elements=None, difficulty=None, large_output=False):
 
     return molecule
 
-def randNiceMolecule(elements=None,
-                     difficulty=None,
-                     large_output=False):
+def randNiceMolecule(settings):
     '''Generate a random 'nice' molecule - currently, either symmetrical or a Polymer.'''
     # TODO: Optionally specify a number of atoms and restrict symmetry/polymers accordingly
     # TODO: When asked for large output, ensure the molecule is of a decent size
     # TODO: when asked for a large output and only 1 input zone, bias the generation algorithm
     #       accordingly
-    if random.randint(0, 1) == 1:
-        return randSymmetricalMolecule(elements=elements, large_output=large_output)
+    if random.random() < 0.5:
+        return randSymmetricalMolecule(settings)
     else:
-        return randPolymer(elements=elements, difficulty=difficulty, large_output=large_output)
+        return randPolymer(settings)
 
-def randNiceMoleculeFromFormula(formula, difficulty):
+def randNiceMoleculeFromFormula(formula, settings):
     '''Given a formula, try to build a 'nice' molecule.'''
     pass # TODO
 
-def randMolecules(num_molecules,
-                  difficulty=None,
-                  elements=None,
-                  large_output=False):
-    '''Generate a specified # of random molecules. Optionally specify the elements to use and the
-    total size in # of atoms of all molecules combined.
+def randMolecules(num_molecules, settings):
+    '''Generate a specified # of random molecules. Optionally specify difficulty, available
+    elements, and whether to use a large output zone.
     '''
-    return [randNiceMolecule(elements=elements,
-                             difficulty=difficulty,
-                             large_output=large_output)
-            for _ in range(num_molecules)]
+    return [randNiceMolecule(settings) for _ in range(num_molecules)]
 
-def randMoleculesFromMolecules(molecules,
-                               difficulty,
-                               num_molecules=None, # Set to 3 for a production level
-                               bonders=True,
-                               fusion=True,
-                               fission=True):
+def randInputsFromOutputs(molecules, settings):
     '''Given a list of molecules, generate a list of minimally-sized molecules that could have
     generated them. We'll refer to the given molecules as outputs and the generated molecules as
     inputs, though how they are actually used is irrelevant.
@@ -665,24 +649,24 @@ def randMoleculesFromMolecules(molecules,
 
     # Determine a minimally-sized set of input formulas which satisfy this reaction formula
     input_formulas = min_split_formula(balanced_reaction_formula,
-                                       max_formulas=num_molecules)
+                                       max_formulas=settings.num_inputs)
 
     # If we didn't reach the target # of molecules (if specified), we need to spread the minimal
     # formulas across the required inputs
-    if num_molecules is not None and len(input_formulas) != num_molecules:
+    if settings.num_inputs is not None and len(input_formulas) != settings.num_inputs:
         # Identify the largest input formula
         largest_formula = max(input_formulas, key=lambda f: f.num_atoms())
 
-        # If there aren't enough atoms in the min split to cover all outputs, duplicate whichever
+        # If there aren't enough atoms in the min split to cover all inputs, duplicate whichever
         # contains the element with the highest count in the balanced formula
-        if largest_formula.num_atoms() < num_molecules:
+        if largest_formula.num_atoms() < settings.num_inputs:
             bottleneck_element = max(balanced_reaction_formula.elements(),
                                      key=lambda e: balanced_reaction_formula[e])
             for formula in input_formulas:
                 if bottleneck_element in formula:
                     bottleneck_formula = formula
                     break
-            for _ in range(num_molecules - len(input_formulas)):
+            for _ in range(settings.num_inputs - len(input_formulas)):
                 input_formulas.append(copy.copy(bottleneck_formula))
         else:
             # If only N (N < max_formulas) formulas were used, there were at most N unique element
@@ -701,7 +685,7 @@ def randMoleculesFromMolecules(molecules,
                 # Remove chunks from the start of the atom list iteratively
                 new_input_formulas = []
                 remaining_atoms = copy.copy(atoms)
-                for remaining_formulas in range(num_molecules - len(input_formulas), 0, -1):
+                for remaining_formulas in range(settings.num_inputs - len(input_formulas), 0, -1):
                     # Leave at least 1 atom per remaining formula
                     # Pivot doesn't include itself in the draw so start from idx at least 1.
                     pivot = random.randint(1, len(remaining_atoms) - remaining_formulas)
@@ -716,45 +700,39 @@ def randMoleculesFromMolecules(molecules,
 
     return [randMoleculeFromFormula(formula) for formula in input_formulas]
 
-def randResearchLevel(difficulty=None,
-                      elements=None,
-                      num_inputs=None,
-                      num_outputs=None,
-                      large_output=False,
-                      fusion=True, # TODO
-                      fission=True, # TODO
-                      balanced=True, # TODO: allow waste-storage levels
-                      random_inputs=False): # TODO
-    '''Generate a random Research level and return the mission code.'''
+def randResearchLevel(settings, verbose=False):
+    '''Generate a random Research level and return the mission code.
+    If specified, also pretty-print the created molecules.'''
     level = ResearchLevel()
 
-    if difficulty is None:
-        difficulty = random.randint(0, 2)
-    level['difficulty'] = difficulty
+    # Make modifications to the settings as needed
+    if settings.difficulty is None:
+        settings.difficulty = random.randint(0, 2)
+    level['difficulty'] = settings.difficulty
 
     # Determine how many output zones we're using
-    if large_output:
-        num_outputs = 1
-        difficulty += 1 # TODO: this is a hack
-    elif num_outputs is None:
-        num_outputs = random.randint(1, 2)
+    level['has-large-output'] = settings.large_output
+    if settings.large_output:
+        settings.num_outputs = 1
+        # As a quick hack, set diff of large output levels from 1-4 instead of 0-3.
+        settings.difficulty += 1
+    elif settings.num_outputs is None:
+        settings.num_outputs = random.randint(1, 2)
 
     # Generate output molecules first
-    output_molecules = randMolecules(num_outputs,
-                                     difficulty=difficulty,
-                                     elements=elements,
-                                     large_output=large_output)
+    output_molecules = randMolecules(num_molecules=settings.num_outputs,
+                                     settings=settings)
 
     # Generate input molecules based on the output molecules
-    input_molecules = randMoleculesFromMolecules(output_molecules,
-                                                 difficulty=difficulty,
-                                                 num_molecules=num_inputs)
+    input_molecules = randInputsFromOutputs(molecules=output_molecules,
+                                            settings=settings)
 
-    # Randomly swap the inputs with the outputs to reduce bias from the generating algorithm
-    if not large_output \
-       and ((num_inputs is None and num_outputs is None) \
+    # Randomly swap the inputs with the outputs to reduce bias from the generating algorithm,
+    # if this doesn't violate our given settings
+    if not settings.large_output \
+       and ((settings.num_inputs is None and settings.num_outputs is None)
             or len(input_molecules) == len(output_molecules)) \
-       and random.randint(0, 1) == 1:
+       and random.random() < 0.5:
         input_molecules, output_molecules = output_molecules, input_molecules
 
     # Add input zones to the level
@@ -763,8 +741,8 @@ def randResearchLevel(difficulty=None,
             zone_idx = random.randint(0, 1)
 
         input_zone_json = {'inputs':[]}
-        num_inputs = 1 # TODO: random inputs
-        for _ in range(num_inputs):
+        num_molecules_per_zone = 1 # TODO: random inputs
+        for _ in range(num_molecules_per_zone):
             input_json = {}
             input_json['molecule'] = molecule.get_json_str()
             input_json['count'] = 12
@@ -773,7 +751,7 @@ def randResearchLevel(difficulty=None,
 
     # Add output zones to the level
     for zone_idx, molecule in enumerate(output_molecules):
-        if len(output_molecules) == 1 and not large_output:
+        if len(output_molecules) == 1 and not settings.large_output:
             zone_idx = random.randint(0, 1)
 
         output_zone_json = {}
@@ -783,23 +761,27 @@ def randResearchLevel(difficulty=None,
         level['output-zones'][str(zone_idx)] = output_zone_json
 
     # Add 'features' to the level (bonders, fusers, etc.)
-    level['has-large-output'] = large_output
     if difficulty == 0:
         level['bonder-count'] = 4
     else:
         level['bonder-count'] = random.choice([2, 4, 4, 8]) # Bias toward 4 bonders
-    level['has-sensor'] = random.randint(0, 1) == 1 # Sure, why not
-    level['has-fuser'] = False
-    level['has-splitter'] = False
-    level['has-teleporter'] = difficulty >= 2 and random.randint(0, 1) == 1
+    level['has-sensor'] = random.random() < 0.5
+    level['has-fuser'] = settings.fusion
+    level['has-splitter'] = settings.fission
+    level['has-teleporter'] = settings.difficulty >= 2 and random.random() < 0.5
+
+    if verbose:
+        print 'Inputs:'
+        for molecule in input_molecules:
+            print molecule
+        print 'Outputs:'
+        for molecule in output_molecules:
+            print molecule
 
     # Return the mission code
     return level.get_code()
 
-def randProductionLevel(difficulty=None,
-                        elements=None,
-                        num_inputs=None,
-                        num_outputs=None):
+def randProductionLevel(settings, verbose=False):
     '''Generate a random Production level.'''
     level = ProductionLevel()
 
@@ -812,19 +794,17 @@ def randProductionLevel(difficulty=None,
         num_outputs = random.choice([1, 2, 2, 3]) # bias toward 2 outputs
 
     # Generate output molecules first
-    output_molecules = randMolecules(num_outputs,
-                                     difficulty=difficulty,
-                                     elements=elements)
+    output_molecules = randMolecules(num_molecules=settings.num_outputs,
+                                     settings=settings)
 
     # Generate input molecules (up to 3 since this is a production level)
-    input_molecules = randMoleculesFromMolecules(output_molecules,
-                                                 difficulty=difficulty,
-                                                 num_molecules=num_inputs)
+    input_molecules = randInputsFromOutputs(output_molecules,
+                                            settings=settings)
 
     # Randomly swap the inputs with the outputs to reduce bias from the generating algorithm
-    if ((num_inputs is None and num_outputs is None) \
+    if ((settings.num_inputs is None and settings.num_outputs is None) \
         or len(input_molecules) == len(output_molecules)) \
-       and random.randint(0, 1) == 1:
+       and random.random() < 0.5:
         input_molecules, output_molecules = output_molecules, input_molecules
 
     # Add the random input zone to the level
@@ -852,61 +832,86 @@ def randProductionLevel(difficulty=None,
     level['terrain'] = random.randint(0, 4)
     # By convention, if the inputs contain greek elements the terrain is set to Flidais
     for molecule in input_molecules:
-        for element in molecule.formula.keys():
+        for element in molecule.formula.elements():
             if element.symbol in ('Θ', 'Ω', 'Σ', 'Δ'):
                 level['terrain'] = 5
                 break
 
     # No point having assembly/disassembly if any other reactors are available, and there's a max of
     # 4 types of reactors available anyway, probably for this reason
-    if random.randint(1, 50) == 1:
+    if random.random() < 0.02:
         level['has-assembly'] = True
         level['has-disassembly'] = True
     else:
-        level['has-starter'] = True # Always available, in case anyone wants to comment their code
-                                    # by using a strictly worse reactor
-        level['has-advanced'] = random.randint(0, 1) == 1 # Sensor reactor
-        level['has-nuclear'] = False # TODO
-        level['has-superbonder'] = random.randint(1, 4) == 1
+        level['has-starter'] = True # Always available, in case the player wants to comment their
+                                    # code by using a strictly worse reactor
+        level['has-advanced'] = random.random() < 0.5 # Sensor reactor
+        level['has-nuclear'] = settings.fusion or settings.fission
+        level['has-superbonder'] = random.random() < 0.25
 
-    level['has-recycler'] = random.randint(0, 1) == 1
+    level['has-recycler'] = random.random() < 0.5
+
+    if verbose:
+        print 'Generated research level.'
+        print 'Inputs:'
+        for molecule in input_molecules:
+            print molecule
+        print 'Outputs:'
+        for molecule in output_molecules:
+            print molecule
 
     return level.get_code()
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--view', action='store_true',
-                        help="Open Cearn's mission viewer in the browser")
-    parser.add_argument('--research', '-r', action='store_true',
-                        help="Dummy flag; Research levels are generated by default anyway.")
-    parser.add_argument('--production', '-p', action='store_true',
-                        help="Generate a Production level instead of a Research level.")
-    parser.add_argument('--difficulty', '-d', type=int, action="store",
+                        help="Open Cearn's mission viewer in the browser" \
+                             + "(http://coranac.com/spacechem/mission-viewer?mode=editor)")
+    parser.add_argument('--print', dest='verbose', action='store_true', default=False,
+                        help="Pretty-print the generated level.")
+
+    level_type = parser.add_mutually_exclusive_group()
+    level_type.add_argument('-r', '--research', action='store_true', default=True,
+                            help="Dummy flag; Research levels are generated by default anyway.")
+    level_type.add_argument('-p', '--production', action='store_true', default=False,
+                            help="Generate a Production level instead of a Research level.")
+
+    parser.add_argument('-d', '--difficulty', type=int, action="store",
                         choices=[0, 1, 2, 3], default=random.randint(0, 2),
                         help="Set the difficulty of the level.")
     parser.add_argument('--lanky', action="store_true",
                         help="Set difficulty to max")
-    parser.add_argument('--basic', action='store_true',
-                        help="Use only 'basic' elements, one for each of the non-0 bond counts:" \
-                             + "[H, O, B, C, N, S, Cl, Os]")
-    parser.add_argument('--elements', action='store', nargs='*', type=str,
-                        help="Select only from the specified elements in creating the level." \
-                             + " May be specified by atomic # or symbol."
-                             + " Not currently guaranteed to use all of the available elements.")
-    parser.add_argument('--inputs', action='store', type=int, default=None,
+
+    element_args = parser.add_mutually_exclusive_group()
+    element_args.add_argument('-e', '--elements', action='store', nargs='*', type=str,
+            help="Select only from the specified elements in creating the level." \
+                 + " May be specified by atomic # or symbol."
+                 + " Not currently guaranteed to use all of the available elements.")
+    element_args.add_argument('--basic', action='store_true',
+            help="Use only 'basic' elements, one for each of the non-0 bond counts:" \
+                 + "[H, O, B, C, N, S, Cl, Os]")
+
+    parser.add_argument('-i', '--inputs', action='store', type=int, default=None,
                         choices=[1, 2, 3],
                         help="The # of inputs to use.")
-    parser.add_argument('--outputs', action='store', type=int, default=None,
+    parser.add_argument('-o', '--outputs', action='store', type=int, default=None,
                         choices=[1, 2, 3],
                         help="The # of outputs to use.")
     parser.add_argument('--large_output', action="store_true",
                         help="Set a research level to have a large output zone")
+
+    parser.add_argument('--fusion', action="store_true", default=False,
+                        help="Allow fusion in the level. Default none.")
+    parser.add_argument('--fission', action="store_true", default=False,
+                        help="Allow fission in the level. Default none.")
+    parser.add_argument('--nuclear', action="store_true",
+                        help="Allow both fission and fusion in the level. Default none.")
     args = parser.parse_args()
 
     difficulty = args.difficulty
     if args.lanky:
         difficulty = 3
+
     elements = None
     if args.elements:
         elements = [elements_data.elements_dict[int(e)] if e.isdigit()
@@ -915,34 +920,40 @@ if __name__ == '__main__':
     elif args.basic:
         elements = elements_data.basic_elements
 
+    if args.nuclear:
+        args.fusion = True
+        args.fission = True
+
+    settings = RandomizationSettings(difficulty=difficulty,
+                                     elements=elements,
+                                     num_inputs=args.inputs,
+                                     num_outputs=args.outputs,
+                                     large_output=args.large_output,
+                                     fusion=args.fusion,
+                                     fission=args.fission)
+
     if args.production:
-        # Check for conflicts in the given options
         if args.large_output:
             raise argparse.ArgumentTypeError('Cannot use a large output in a production level')
-        if args.research:
-            raise argparse.ArgumentTypeError('Conflicting --research and --production flags used')
 
-        code = randProductionLevel(difficulty=difficulty,
-                                   elements=elements,
-                                   num_inputs=args.inputs,
-                                   num_outputs=args.outputs)
+        code = randProductionLevel(settings=args.settings,
+                                   verbose=args.verbose)
     else:
         # Check for conflicts in the given options
-        if args.outputs == 3:
+        if args.inputs == 3:
+            raise argparse.ArgumentTypeError('Too many inputs; did you mean to add --production ?')
+        elif args.outputs == 3:
             raise argparse.ArgumentTypeError('Too many outputs; did you mean to add --production ?')
         elif args.outputs == 2 and args.large_output:
             raise argparse.ArgumentTypeError('Cannot have 2 outputs in a large output level')
-        if args.inputs == 3:
-            raise argparse.ArgumentTypeError('Too many inputs; did you mean to add --production ?')
 
-        code = randResearchLevel(difficulty=difficulty,
-                                 elements=elements,
-                                 num_inputs=args.inputs,
-                                 num_outputs=args.outputs,
-                                 large_output=args.large_output)
+        code = randResearchLevel(settings=settings,
+                                 verbose=args.verbose)
 
     if args.view:
         import webbrowser
         webbrowser.open('http://coranac.com/spacechem/mission-viewer?mode=editor&code=' + code)
 
+    if args.verbose:
+        print 'Level code:\n'
     print code

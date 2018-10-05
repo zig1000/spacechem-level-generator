@@ -6,11 +6,14 @@ Built in python 2.7 (.10)
 
 `python level_generator.py`
 
-Default creates a Research level. See args for options.
+Default creates a Research level, printing the importable level code to cmd line. See Args for options.
 
 ## Args
 
---view : Auto-open Cearn's mission viewing website with the generated code
+--view : Auto-open Cearn's mission-viewing website with the generated code
+         (http://coranac.com/spacechem/mission-viewer?mode=editor)
+
+--print : Pretty-print the level's molecules in addition to the level code.
 
 --production : Create a production level instead of a research level
 
@@ -27,7 +30,7 @@ Default creates a Research level. See args for options.
 --elements : Set of elements to exclusively select atoms from. Can be specified by atomic symbol or
              number - Greek elements can only be specified by number (200-203).
 
---basic : Select atoms exclusively from the set of 'basic' bond count atoms
+--basic : Select atoms exclusively from the set of 'basic' bond count atoms,
           equivalent to --elements H O B C N S Cl Os
 
 --large_output: Make a large output (8x4) research level
@@ -36,8 +39,6 @@ e.g. `python level_generator.py --view -d 1 --inputs 1 --elements C O H`
 
 TBA:
 
-Improved molecule construction based on difficulty
-
  --fusion
 
  --fission
@@ -45,6 +46,8 @@ Improved molecule construction based on difficulty
  --sorting
 
  --random (random inputs)
+
+ --waste (imbalanced reaction that requires storing waste atoms in the reactor)
 
 ## Behaviour
 

@@ -37,7 +37,7 @@ class Formula(collections.Counter):
             self.large_output = False
         super(Formula, self).__init__(*args, **kwargs)
 
-    # Redefine Counter-s built-in 'elements()' method to return the list of unique ELements in the
+    # Redefine Counter's built-in elements() method to return the list of unique ELements in the
     # formula, and move its original functionality to 'atoms()'.
     def elements(self):
         '''Return a list of unique elements in this formula.'''
@@ -284,11 +284,19 @@ class Molecule:
                 else:
                     result += str(atom)
                 # Represent any bonds to the right of the atom
+                left_atom = atom
+                right_atom = self.grid[r][c + 1] if c + 1 < self.num_cols else None
+
+                bond_str = ' '
+                if left_atom is not None and right_atom is not None \
+                   and left_atom.right_bonds != right_atom.left_bonds:
+                    bond_str = '?'
+                elif left_atom is not None and left_atom.right_bonds != 0:
+                    bond_str = str(left_atom.right_bonds)
+                elif right_atom is not None and right_atom.left_bonds != 0:
+                    bond_str = str(right_atom.left_bonds)
                 if c < self.num_cols - 1:
-                    if atom is not None and atom.right_bonds > 0:
-                        result += ' ' + str(atom.right_bonds) + ' '
-                    else:
-                        result += 3*' '
+                    result += ' ' + bond_str + ' '
             result += '|\n'
             # Add a row of vertical bonds
             if r < self.num_rows - 1:
@@ -342,16 +350,16 @@ class Molecule:
         return result_dict.keys()
 
     def add_atom(self, new_atom):
+        '''Add the given Atom to this molecule. The Atom's position must be open in this molecule.
+        Add any bonds specified in the incoming atom.
+        '''
         if self[new_atom.pos] is not None:
             raise Exception("Conflict with existing atom; cannot add {0} to \n{1}".format(repr(atom), self))
         self[new_atom.pos] = new_atom
 
         # Quick helper to check if an atom within this molecule's grid has at least 1 open side
         def has_open_side(atom):
-            for neighbor_posn in atom.pos.neighbors():
-                if self[neighbor_posn] is None:
-                    return True
-            return False
+            return any(self[pos] is None for pos in atom.pos.neighbors())
 
         # Partial update of the number of open bonds this molecule has
         if has_open_side(new_atom):
@@ -384,7 +392,7 @@ class Molecule:
         self.atoms.append(new_atom)
 
     def is_connected(self):
-        '''For more advanced construction algorithms we're going to allow adding atoms in
+        '''For the purposes of more advanced construction algorithms we allow adding atoms in
         unconnected cells. This checks if the molecule is currently 'connected' and thus valid.
         We'll count empty molecules as unconnected.
         '''
@@ -394,25 +402,25 @@ class Molecule:
         # Do a DFS starting from one atom and following the bonds of the molecule. If we don't
         # find every atom, it's not connected
         stack = [self.atoms[0]]
-        visited = {} # Track the grid positions of visited atoms
+        # We don't have to actually 'visit' every atom, seeing them as neighbors is sufficient
+        seen = {self.atoms[0].pos: True} # Track the grid positions of seen connected atoms
         while True:
-            if len(visited) == len(self):
+            if len(seen) == len(self):
                 return True
             elif not stack:
                 return False
 
             atom = stack.pop()
-            if atom.pos not in visited:
-                visited[atom.pos] = True
-
-            # Check for connected neighbors
-            for pos in [p for p in atom.pos.neighbors() if p not in visited]:
-                adj_atom = self[pos]
+            # Check for connected neighbors. When we see an unseen connected atom, add it to the
+            # stack
+            for adj_pos in [p for p in atom.pos.neighbors() if p not in seen]:
+                adj_atom = self[adj_pos]
                 if adj_atom is not None:
                     if (adj_atom.col < atom.col and atom.left_bonds != 0) \
                          or (adj_atom.col > atom.col and atom.right_bonds != 0) \
                          or (adj_atom.row < atom.row and atom.top_bonds != 0) \
                          or (adj_atom.row > atom.row and atom.bottom_bonds != 0):
+                       seen[adj_pos] = True
                        stack.append(adj_atom)
 
     def shift(self, rows=0, cols=0):
@@ -436,7 +444,7 @@ class Molecule:
         # Recount open bonds once we're done since some atoms may no longer have open sides
         self.open_bonds = 0
         for atom in self.atoms:
-            if [True for p in atom.pos.neighbors() if self[p] is None]:
+            if any(self[pos] is None for pos in atom.pos.neighbors()):
                 self.open_bonds += atom.remaining_bonds()
 
     def add_molecule(self, other):
@@ -444,7 +452,7 @@ class Molecule:
         positions.
         '''
         # Check for conflicts
-        if any([self[atom.pos] is not None for atom in other.atoms]):
+        if any(self[atom.pos] is not None for atom in other.atoms):
             raise Exception('Cannot add molecule \n{0} to molecule \n{1}; conflicting atoms'.format(other, self))
 
         # Add the new atoms
