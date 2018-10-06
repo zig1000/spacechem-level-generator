@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 import argparse
+from collections import Counter
 import copy
-import fractions
 import random
 
 import elements_data
@@ -25,8 +25,10 @@ class ElementPicker:
     def __init__(self, elements=None, prob_new_element=0.5, prob_decay_factor=1):
         if elements is None:
             elements = elements_data.non_noble_elements
+        if not elements:
+            raise ValueError("ElementPicker initialized with empty elements iterable")
         self.used_elements = []
-        # A shallow copy is sufficient since we never mutate Elements
+        # Use list() to both copy and standardize the given iterable of elements
         self.unused_elements = list(elements)
         self.prob_new_element = prob_new_element
         self.prob_decay_factor = prob_decay_factor
@@ -36,19 +38,23 @@ class ElementPicker:
         if min_bond_count > 0:
             valid_used_elements = [e for e in self.used_elements if e.max_bonds >= min_bond_count]
             valid_unused_elements = [e for e in self.unused_elements if e.max_bonds >= min_bond_count]
+            # Make sure at least one element with the specified bond count exists
+            if not valid_unused_elements and not valid_used_elements:
+                raise ValueError("No elements provided with minimum bond count "
+                                 + str(min_bond_count))
         else:
             valid_used_elements = self.used_elements
             valid_unused_elements = self.unused_elements
 
         if (valid_unused_elements and random.random() < self.prob_new_element) \
-           or not valid_used_elements:
-            # If this wasn't the first element picked, decay the new element probability
-            if self.used_elements:
-                self.prob_new_element *= self.prob_decay_factor
-
+                or not valid_used_elements:
             element = random.choice(valid_unused_elements)
             self.used_elements.append(element)
             self.unused_elements.remove(element)
+
+            # If this wasn't the first element picked, decay the new element probability
+            if self.used_elements:
+                self.prob_new_element *= self.prob_decay_factor
         else:
             element = random.choice(valid_used_elements)
         return element
@@ -80,26 +86,47 @@ def min_split_formula(formula, max_formulas=None):
     element, that element is removed from the first formula when possible (fixing the example but
     not more complex cases). However this is probably an NP-hard ILP anyway so this approximation is
     considered 'good enough'.
+    Noble gases are also pre-filtered into their own input zones.
     '''
-    # TODO: This currently breaks in several cases of weird bond counts, e.g. if given two different
-    #       noble gases it tries to put them all in the first input zone and fails.
-    if not formula:
-        raise Exception("min_split_formula called with empty formula")
-
     if max_formulas is None:
         max_formulas = 2
 
-    # Divide the formula by its GCD
-    formula = copy.copy(formula) # Don't mutate the input
-    formula.divide_by_gcd()
+    if not formula:
+        raise FormulaValidityError("Formula must not be empty")
 
-    if max_formulas == 1:
-        if not formula.is_valid():
-            raise Exception('Cannot fit formula {0} into one zone'.format(formula))
+    # Get the formula divided by its own GCD (but keep track of the original for logging purposes)
+    given_formula = formula
+    formula = formula.least_common_formula() # Also ensures we aren't mutating the given formula
+
+    if max_formulas == 1 and formula.is_valid():
         return [formula]
+    elif max_formulas <= 1:
+        raise FormulaValidityError('Cannot fit formula {0} into {1} zone'.format(given_formula,
+                                                                                 max_formulas))
 
+    # If the formula contains any noble gases, filter them into their own input zones then recurse
+    # on the remainder
+    noble_gases = [e for e in formula.elements() if e.max_bonds == 0]
+    if noble_gases:
+        best_split = []
+        clean_formula = copy.copy(formula)
+        for e in noble_gases:
+            best_split.append(Formula({e: 1}))
+            del clean_formula[e]
+        if clean_formula:
+            try:
+                best_split.extend(min_split_formula(clean_formula,
+                                                    max_formulas=max_formulas - len(noble_gases)))
+            except FormulaValidityError:
+                raise FormulaValidityError('Cannot fit formula {0} into {1} zones'
+                                           .format(given_formula, max_formulas))
+
+        random.shuffle(best_split)
+        return best_split
+
+    # Loop over possible greedy allocations to the first formula
     best_splits = []
-    min_size = 49
+    min_size = 49 # Initialize to larger than 3 full input zones
     for a in range(1, max(formula.values()) + 1):
         this_split = []
         # Calculate f = a*f1 + b*f2 (+ c*f3 ...) while checking that all sub-formulas are valid
@@ -113,9 +140,11 @@ def min_split_formula(formula, max_formulas=None):
 
         # Attempt to partially fix the greediness of the first formula
         if len(formula_2.elements()) == 1:
+            # If the second formula is a lone element remove that element from the first formula
             e = formula_2.elements()[0]
             if e in formula_1:
                 del formula_1[e]
+
         this_split.append(formula_1)
 
         if formula_2:
@@ -124,7 +153,7 @@ def min_split_formula(formula, max_formulas=None):
                     continue
                 this_split.append(formula_2)
             else:
-                # Recurse - this gets very costly very fast, but we only need to go up to 3
+                # Recurse - this gets very costly very fast, but we only call it with up to 3
                 this_split.extend(min_split_formula(formula_2, max_formulas=max_formulas-1))
 
         # Calculate the size of this split
@@ -139,12 +168,13 @@ def min_split_formula(formula, max_formulas=None):
             best_splits.append(this_split)
 
     if not best_splits:
-        raise Exception("Could not find valid split of formula {0}".format(formula))
+        raise FormulaValidityError("Could not find valid split of formula {0}".format(formula))
 
     return random.choice(best_splits)
 
 def randFormula(num_atoms=None,
                 elements=None,
+                large_output=False,
                 element_diversity_factor=0.6):
     '''Generate a random molecule formula. Doesn't make nice molecules so currently unused.'''
     if num_atoms is None: # If size isn't specified keep adding atoms with 75% probability
@@ -158,7 +188,7 @@ def randFormula(num_atoms=None,
 
     formula = Formula()
     tries = 0
-    while not formula.is_valid():
+    while not formula.is_valid(large_output=large_output):
         if tries == 500:
             raise ValueError(("Could not generate valid formula with {0} atoms from {1} in 500 "
                               + "tries.").format(num_atoms, elements))
@@ -173,23 +203,23 @@ def randFormula(num_atoms=None,
 
     return formula
 
-def randMoleculeFromFormula(formula):
+def randMoleculeFromFormula(formula, large_output=False):
     '''Generate a Molecule from a Formula. Raise an exception if the given formula cannot fit within
     a 4x4 zone (e.g. C3H8 is impossible to construct within a 4x4 grid).
     '''
-    if not formula.is_valid():
-        raise Exception("Cannot construct a molecule with formula {0}".format(formula))
+    if not formula.is_valid(large_output=large_output):
+        raise FormulaValidityError("Cannot construct a molecule with formula {0}".format(formula))
 
     attempts = 0
     while True:
         if attempts >= 1000:
-            raise Exception("No valid molecule found after 1000 retries for formula: {0}"
-                            .format(formula))
+            raise FormulaValidityError("No valid molecule found after 1000 retries for formula: {0}"
+                                       .format(formula))
             # TODO: Since we know the formula is valid, instead warn the user and then resort to the
             #       biased but guaranteed to work construction method (build middle-out using
             #       highest bond count atoms first).
 
-        atom_elements = list(formula.atoms())
+        atom_elements = formula.elements_collection()
         random.shuffle(atom_elements)
 
         molecule = Molecule()
@@ -300,11 +330,6 @@ def randSymmetricalMolecule(settings):
     It can either be rotationally symmetrical around a point (90 or 180 degree rotational symmetry),
     or else it can be reflexively symmetrical across an axis.
     '''
-    elements = settings.elements
-    if elements is None:
-        elements = elements_data.elements
-    elements = [e for e in elements if e.max_bonds >= 4] # TODO: FIX ME
-
     element_picker = ElementPicker(elements=elements, prob_new_element=0.5)
 
     # Calculate a minimum size for our molecule based on difficulty
@@ -438,7 +463,8 @@ def randSymmetricalMolecule(settings):
         posns = [posn] + twins(posn)
 
         # Pick a new element to add
-        element = element_picker.pick()
+        # TODO: Stop kludging the bonds
+        element = element_picker.pick(min_bond_count=4)
 
         # Add an atom of that element to each of the symmetrical positions
         for p in posns:
@@ -472,11 +498,8 @@ def randPolymer(settings):
 
     At least one of the allowed elements must have a max bond count of 2 or more.
     '''
-    if settings.elements is None:
-        elements = elements_data.non_noble_elements
-    else:
-        # Sanitize input
-        elements = [e for e in settings.elements if e.max_bonds != 0]
+    # Sanitize input
+    elements = [e for e in settings.elements if e.max_bonds != 0]
 
     element_picker = ElementPicker(elements=elements, prob_new_element=0.5)
 
@@ -633,22 +656,100 @@ def randMolecules(num_molecules, settings):
 
 def randInputsFromOutputs(molecules, settings):
     '''Given a list of molecules, generate a list of minimally-sized molecules that could have
-    generated them. We'll refer to the given molecules as outputs and the generated molecules as
-    inputs, though how they are actually used is irrelevant.
+    generated them based on the available level features. We'll refer to the given molecules as
+    outputs and the generated molecules as inputs, though how they are actually used is irrelevant.
     '''
     output_molecules = []
-    balanced_reaction_formula = Formula()
+    balanced_outputs_formula = Formula()
 
+    # Sum up the given output molecules' formulas
     for molecule in molecules:
-        # For the purposes of calculating a balanced reaction, we can effectively reduce a
-        # molecule to its LCM (lowest common molecule :P)
+        if not molecule:
+            raise ValueError("Received empty output molecule.")
+        # For the purposes of calculating a balanced reaction, we can effectively divide a
+        # molecule by its GCD
         # e.g. C2H4 is effectively equivalent to CH2 in terms of creating a wasteless reaction
-        lcm_formula = copy.copy(molecule.formula)
-        lcm_formula.divide_by_gcd()
-        balanced_reaction_formula += lcm_formula
+        balanced_outputs_formula += molecule.formula.least_common_formula()
+
+    balanced_inputs_formula = copy.deepcopy(balanced_outputs_formula)
+
+    # Do inverse (since we're going from output -> input) nuclear transformations on the balanced
+    # reaction formula if fuser and/or splitter available
+    if settings.fusion and settings.fission:
+        natural_elements = [e for e in balanced_inputs_formula.elements()
+                            if 1 <= e.atomic_num <= 109]
+        if natural_elements:
+            nuclear_element = random.choice(natural_elements)
+            input_element = random.choice([e for e in settings.elements if e != nuclear_element])
+            balanced_inputs_formula[input_element] += balanced_inputs_formula[nuclear_element]
+            del balanced_inputs_formula[nuclear_element]
+    elif settings.fusion:
+        # Pick an element(s) and split it up randomly.
+        # Bias toward splitting into elements already in the formula, and toward perfect divisors
+        # TODO: For now will split all copies of an element that were given, but could change that
+        #       such that some of the atoms to be fused up to also occur in the input.
+        fusable_elements = [e for e in balanced_inputs_formula.elements()
+                            if 2 <= e.atomic_num <= 109]
+        if not fusable_elements:
+            raise MoleculeValidityError("Generated output molecule incompatible with pure fusion:\n"
+                                        + str(molecule))
+
+        fused_element = random.choice(fusable_elements)
+        # Randomly split the element up, biasing toward a split that produces an element already
+        # in the formula, or one that divides evenly into the output element and isn't noble
+        # (fuck Helium).
+        # It should be impossible for nice_split_elements to end up empty since we always have
+        # Hydrogen as a fallback divisor
+        nice_split_elements = []
+        ugly_split_elements = []
+        for i in range(1, fused_element.atomic_num):
+            element = elements_data.elements_dict[i]
+            if element in balanced_inputs_formula \
+                   or (fused_element.atomic_num % i == 0
+                       and element.max_bonds != 0):
+                nice_split_elements.append(element)
+            else:
+                ugly_split_elements.append(element)
+        # Go for clean splits 75% of the time if possible
+        if not ugly_split_elements or random.random() < 0.75:
+            divisor_element = random.choice(nice_split_elements)
+        else:
+            divisor_element = random.choice(ugly_split_elements)
+        dividend = fused_element.atomic_num / divisor_element.atomic_num
+        balanced_inputs_formula[divisor_element] += dividend * balanced_inputs_formula[fused_element]
+
+        # Add leftover element if we didn't pick a perfectly splitting element
+        remainder = fused_element.atomic_num % divisor_element.atomic_num
+        if remainder != 0:
+            remainder_element = elements_data.elements_dict[remainder]
+            balanced_inputs_formula[remainder_element] += balanced_inputs_formula[fused_element]
+
+        # Remove the transformed element from the input side
+        del balanced_inputs_formula[fused_element]
+    elif settings.fission:
+        # Walk through the output formula and build up the list of elements that fission could
+        # successfully be used on to produce some of the outputs.
+        output_masses = Counter({e.atomic_num: count
+                                 for e, count in balanced_inputs_formula.items()
+                                 if count > 0})
+        valid_fissile_inputs_dict = splittable_sources(output_masses)
+        if not valid_fissile_inputs_dict:
+            raise MoleculeValidityError(
+                "Fission without fusion requested, but given output molecule(s) have no valid"
+                + " fissile input elements for their collective formula:\n"
+                + str(balanced_outputs_formula))
+
+        # Randomly select a valid fissionable input element
+        new_element_mass = random.choice(valid_fissile_inputs_dict.keys())
+        new_element_count = valid_fissile_inputs_dict[new_element_mass]
+        new_element = elements_data.elements_dict[new_element_mass]
+
+        # Calculate and remove the element's dependencies, then add the new element
+        balanced_inputs_formula.remove_fissile_element(new_element, new_element_count)
+        balanced_inputs_formula[new_element] = new_element_count
 
     # Determine a minimally-sized set of input formulas which satisfy this reaction formula
-    input_formulas = min_split_formula(balanced_reaction_formula,
+    input_formulas = min_split_formula(balanced_inputs_formula,
                                        max_formulas=settings.num_inputs)
 
     # If we didn't reach the target # of molecules (if specified), we need to spread the minimal
@@ -660,38 +761,38 @@ def randInputsFromOutputs(molecules, settings):
         # If there aren't enough atoms in the min split to cover all inputs, duplicate whichever
         # contains the element with the highest count in the balanced formula
         if largest_formula.num_atoms() < settings.num_inputs:
-            bottleneck_element = max(balanced_reaction_formula.elements(),
-                                     key=lambda e: balanced_reaction_formula[e])
+            bottleneck_element = balanced_inputs_formula.most_common(1)[0][0]
             for formula in input_formulas:
                 if bottleneck_element in formula:
                     bottleneck_formula = formula
                     break
             for _ in range(settings.num_inputs - len(input_formulas)):
-                input_formulas.append(copy.copy(bottleneck_formula))
+                input_formulas.append(copy.deepcopy(bottleneck_formula))
         else:
             # If only N (N < max_formulas) formulas were used, there were at most N unique element
             # counts in the balanced formula. Randomly split up the largest formula to fill our quota.
             # It's possible for splitting an output up to invalidate its molecule so allow re-attempts.
             split_attempts = 0
             new_input_formulas = []
-            atoms = largest_formula.atoms()
+            elements_collection = largest_formula.elements_collection()
             while not (new_input_formulas
                        and all(formula.is_valid() for formula in new_input_formulas)):
                 if split_attempts >= 1000:
                     raise Exception(('Could not find valid split of atoms {0} across {1} molecules'
-                                     + 'in 1000 attempts').format(atoms, ))
+                                     + 'in 1000 attempts').format(elements_collection,
+                                                                  settings.num_inputs))
 
-                random.shuffle(atoms)
+                remaining_elements = copy.deepcopy(elements_collection)
+                random.shuffle(remaining_elements)
                 # Remove chunks from the start of the atom list iteratively
                 new_input_formulas = []
-                remaining_atoms = copy.copy(atoms)
                 for remaining_formulas in range(settings.num_inputs - len(input_formulas), 0, -1):
                     # Leave at least 1 atom per remaining formula
                     # Pivot doesn't include itself in the draw so start from idx at least 1.
-                    pivot = random.randint(1, len(remaining_atoms) - remaining_formulas)
-                    drawn_atoms, remaining_atoms = remaining_atoms[:pivot], remaining_atoms[pivot:]
-                    new_input_formulas.append(Formula(drawn_atoms))
-                new_input_formulas.append(Formula(remaining_atoms))
+                    pivot = random.randint(1, len(remaining_elements) - remaining_formulas)
+                    drawn_elements, remaining_elements = remaining_elements[:pivot], remaining_elements[pivot:]
+                    new_input_formulas.append(Formula(drawn_elements))
+                new_input_formulas.append(Formula(remaining_elements))
 
                 split_attempts += 1
             # Delete the original formula and add the newly split formulas
@@ -704,35 +805,52 @@ def randResearchLevel(settings, verbose=False):
     '''Generate a random Research level and return the mission code.
     If specified, also pretty-print the created molecules.'''
     level = ResearchLevel()
-
-    # Make modifications to the settings as needed
-    if settings.difficulty is None:
-        settings.difficulty = random.randint(0, 2)
     level['difficulty'] = settings.difficulty
 
     # Determine how many output zones we're using
     level['has-large-output'] = settings.large_output
     if settings.large_output:
         settings.num_outputs = 1
-        # As a quick hack, set diff of large output levels from 1-4 instead of 0-3.
+        # As a quick hack, internally set difficulty of large output levels from 1-4 instead of 0-3.
         settings.difficulty += 1
     elif settings.num_outputs is None:
-        settings.num_outputs = random.randint(1, 2)
+        # TODO: Until such time as symmetrical molecule generation can't balloon the molecule size,
+        #       cap the # of outputs to 1 for 0-difficulty levels
+        if settings.difficulty == 0:
+            settings.num_outputs = 1
+        else:
+            settings.num_outputs = random.randint(1, 2)
 
-    # Generate output molecules first
-    output_molecules = randMolecules(num_molecules=settings.num_outputs,
-                                     settings=settings)
-
-    # Generate input molecules based on the output molecules
-    input_molecules = randInputsFromOutputs(molecules=output_molecules,
-                                            settings=settings)
+    # Generate molecules. Our molecule generation isn't sophisticated enough to avoid occasionally
+    # making molecules that would violate the given settings (e.g. generating output molecules with
+    # only greek elements in a nuclear level), so allow some loops until success
+    tries, max_tries = 0, 50
+    while True:
+        tries += 1
+        try:
+            # Generate output molecules first
+            output_molecules = randMolecules(num_molecules=settings.num_outputs,
+                                             settings=settings)
+            # Generate input molecules based on the output molecules
+            input_molecules = randInputsFromOutputs(molecules=output_molecules,
+                                                    settings=settings)
+            break
+        except MoleculeValidityError as e:
+            if tries >= max_tries:
+                print ("Could not generate valid molecules with the given settings within "
+                       + str(max_tries) + " attempts, latest exception:")
+                raise e
+        except BaseException as e:
+            raise e
 
     # Randomly swap the inputs with the outputs to reduce bias from the generating algorithm,
     # if this doesn't violate our given settings
-    if not settings.large_output \
-       and ((settings.num_inputs is None and settings.num_outputs is None)
-            or len(input_molecules) == len(output_molecules)) \
-       and random.random() < 0.5:
+    if (not settings.large_output
+            and not settings.fusion
+            and not settings.fission
+            and ((settings.num_inputs is None and settings.num_outputs is None)
+                 or len(input_molecules) == len(output_molecules))
+            and random.random() < 0.5):
         input_molecules, output_molecules = output_molecules, input_molecules
 
     # Add input zones to the level
@@ -784,27 +902,46 @@ def randResearchLevel(settings, verbose=False):
 def randProductionLevel(settings, verbose=False):
     '''Generate a random Production level.'''
     level = ProductionLevel()
-
-    if difficulty is None:
-        difficulty = random.randint(0, 2)
-    level['difficulty'] = difficulty
+    level['difficulty'] = settings.difficulty
 
     # Determine how many output zones we're using
-    if num_outputs is None:
-        num_outputs = random.choice([1, 2, 2, 3]) # bias toward 2 outputs
+    if settings.num_outputs is None:
+        # TODO: Until such time as symmetrical molecule generation can't balloon the molecule size,
+        #       cap the # of outputs to 1 for 0-difficulty levels
+        if settings.difficulty == 0:
+            settings.num_outputs = 1
+        else:
+            settings.num_outputs = random.choice([1, 2, 2, 3]) # bias toward 2 outputs
 
-    # Generate output molecules first
-    output_molecules = randMolecules(num_molecules=settings.num_outputs,
-                                     settings=settings)
-
-    # Generate input molecules (up to 3 since this is a production level)
-    input_molecules = randInputsFromOutputs(output_molecules,
-                                            settings=settings)
+    # Generate molecules. Our molecule generation isn't sophisticated enough to avoid occasionally
+    # making molecules that would violate the given settings (e.g. generating output molecules with
+    # only greek elements in a nuclear level), so allow some loops until success
+    tries, max_tries = 0, 50
+    while True:
+        tries += 1
+        try:
+            # Generate output molecules first
+            output_molecules = randMolecules(num_molecules=settings.num_outputs,
+                                             settings=settings)
+            # Generate input molecules based on the output molecules
+            input_molecules = randInputsFromOutputs(molecules=output_molecules,
+                                                    settings=settings)
+            break
+        except MoleculeValidityError as e:
+            if tries >= max_tries:
+                print ("Could not generate valid molecules with the given settings within "
+                       + str(max_tries) + " attempts, latest exception:")
+                raise e
+        except BaseException as e:
+            raise e
 
     # Randomly swap the inputs with the outputs to reduce bias from the generating algorithm
-    if ((settings.num_inputs is None and settings.num_outputs is None) \
-        or len(input_molecules) == len(output_molecules)) \
-       and random.random() < 0.5:
+    # Must still follow # input / output constraints and fission / fusion results
+    if (not settings.fusion
+            and not settings.fission
+            and ((settings.num_inputs is None and settings.num_outputs is None)
+                 or len(input_molecules) == len(output_molecules))
+            and random.random() < 0.5):
         input_molecules, output_molecules = output_molecules, input_molecules
 
     # Add the random input zone to the level
@@ -839,7 +976,8 @@ def randProductionLevel(settings, verbose=False):
 
     # No point having assembly/disassembly if any other reactors are available, and there's a max of
     # 4 types of reactors available anyway, probably for this reason
-    if random.random() < 0.02:
+    if not settings.fusion and not settings.fission \
+           and random.random() < 0.02:
         level['has-assembly'] = True
         level['has-disassembly'] = True
     else:
@@ -901,24 +1039,25 @@ if __name__ == '__main__':
                         help="Set a research level to have a large output zone")
 
     parser.add_argument('--fusion', action="store_true", default=False,
-                        help="Allow fusion in the level. Default none.")
+                        help="Allow fusion in the level. Default disallowed.")
     parser.add_argument('--fission', action="store_true", default=False,
-                        help="Allow fission in the level. Default none.")
+                        help="Allow fission in the level. Default disallowed.")
     parser.add_argument('--nuclear', action="store_true",
-                        help="Allow both fission and fusion in the level. Default none.")
+                        help="Allow both fission and fusion in the level. Default disallowed.")
     args = parser.parse_args()
 
     difficulty = args.difficulty
     if args.lanky:
         difficulty = 3
 
-    elements = None
     if args.elements:
         elements = [elements_data.elements_dict[int(e)] if e.isdigit()
                     else elements_data.elements_dict[e]
                     for e in args.elements]
     elif args.basic:
         elements = elements_data.basic_elements
+    else:
+        elements = elements_data.elements
 
     if args.nuclear:
         args.fusion = True
@@ -936,7 +1075,7 @@ if __name__ == '__main__':
         if args.large_output:
             raise argparse.ArgumentTypeError('Cannot use a large output in a production level')
 
-        code = randProductionLevel(settings=args.settings,
+        code = randProductionLevel(settings=settings,
                                    verbose=args.verbose)
     else:
         # Check for conflicts in the given options

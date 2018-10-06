@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+from collections import namedtuple
 
-from helpers import Element
+'''Immutable class representing a SpaceChemical element, subclassed off namedtuple.'''
+Element = namedtuple('Element', 'atomic_num symbol max_bonds')
 
 elements = [Element(1, 'H', 1),
             Element(2, 'He', 0),

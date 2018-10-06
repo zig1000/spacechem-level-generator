@@ -3,40 +3,23 @@
 
 import base64
 import collections
+import copy
+import elements_data
 import fractions
 import gzip
 import json
 import StringIO
 
-class Element:
-    '''Class representing a SpaceChemical element.'''
-    def __init__(self, atomic_num, symbol, max_bonds):
-        self.atomic_num = atomic_num
-        self.symbol = symbol
-        self.max_bonds = max_bonds
+# Element class is defined in elements_data.py to avoid circular dependencies
 
-    def __str__(self):
-        return self.symbol
-    __repr__ = __str__
-
-    # These are necessary so we can use Elements as dict keys
-    def __eq__(self, other):
-        return type(self) == type(other) and self.atomic_num == other.atomic_num
-
-    def __hash__(self):
-        return hash(self.atomic_num)
+'''Classes For more apropros errors'''
+class FormulaValidityError(ValueError):
+    pass
+class MoleculeValidityError(ValueError):
+    pass
 
 class Formula(collections.Counter):
     '''Represent a chemical formula, as a Counter of elements.'''
-    def __init__(self, *args, **kwargs):
-        '''For checking validity, need to know the size of the zone'''
-        if 'large_output' in kwargs:
-            self.large_output = kwargs['large_output']
-            del kwargs['large_output']
-        else:
-            self.large_output = False
-        super(Formula, self).__init__(*args, **kwargs)
-
     # Redefine Counter's built-in elements() method to return the list of unique ELements in the
     # formula, and move its original functionality to 'atoms()'.
     def elements(self):
@@ -44,7 +27,7 @@ class Formula(collections.Counter):
         # Make sure not to include any 0-counts that Counter leaves hanging around
         return [e for e in self.keys() if self[e] != 0]
 
-    def atoms(self):
+    def elements_collection(self):
         '''Return a list containing each element as many times as its count.'''
         return list(super(Formula, self).elements())
 
@@ -64,15 +47,14 @@ class Formula(collections.Counter):
     def num_atoms(self):
         return sum(self.values())
 
-    def divide_by_gcd(self):
-        '''Divide this formula's numeric values by their GCD. Return the GCD or 0 if this formula
-        is empty.'''
-        if self:
-            gcd = reduce(fractions.gcd, self.values())
-            for e in self.elements():
-                self[e] = self[e] / gcd
-            return gcd
-        return 0
+    def least_common_formula(self):
+        '''Return a new formula which is this formula divided by the GCD of its element counts'''
+        new_formula = copy.copy(self)
+        if new_formula:
+            gcd = reduce(fractions.gcd, new_formula.values())
+            for e in new_formula.elements():
+                new_formula[e] = new_formula[e] / gcd
+        return new_formula
 
     def get_json_str(self):
         '''Return a string representing this formula using the Hill System (C, then H, then
@@ -91,12 +73,12 @@ class Formula(collections.Counter):
         return result
     __str__ = get_json_str # For debugging convenience
 
-    def is_valid(self):
-        '''Check if it's possible to form a molecule with this formula within a 4x4 grid.
-        Empty formulas are considered invalid.
+    def is_valid(self, large_output=False):
+        '''Check if it's possible to form a molecule with this formula within an input/output zone.
+        Empty formulas are considered invalid. Default 4x4 zone, optionally large (8x4) output zone.
         '''
         # Verify size constraints
-        if not (1 <= self.num_atoms() <= 16 + 16*self.large_output):
+        if not (1 <= self.num_atoms() <= 16 + 16*large_output):
             return False
 
         # We'll calculate validity based on whether there are enough bonds in the atom list to form
@@ -113,9 +95,14 @@ class Formula(collections.Counter):
         # The cases for which an incorrect return value by this method could cause an exception
         # would in any case be prohibitively rare and of little concern, and well worth the tradeoff
         # for O(k) runtime (where k is the # of unique elements in the formula).
-        num_atoms = self.num_atoms()
-        usable_connections = 0
-        if self.large_output:
+
+        # Due to the limited sizes of the zones, each max bound count element can only contribute
+        # extra connections so many times before it reaches its limit. For example, in a 4x4 zone,
+        # only two atoms with max bond count 4 will provide two extra endpoints each. Subsequent
+        # max bond count 4 atoms will only allow for 1 extra endpoint each due to space
+        # constraints. E.g. C3H8 is impossible to construct in a 4x4 zone.
+        #
+        if large_output:
             extra_endpoints_dict = {3:14, 4:6}
         else:
             extra_endpoints_dict = {3:6, 4:2}
@@ -145,6 +132,37 @@ class Formula(collections.Counter):
                     extra_endpoints_dict[4] -= extra_endpoints
 
         return allowed_endpoint_count >= 0
+
+    def remove_fissile_element(self, element, count):
+        '''Used while converting an output formula to an input formula via inverse fission.
+        Given a fissile element and count, remove the target count of the element from
+        this formula, drilling down into its 'fission tree' as needed.
+        Raise FormulaValidityError if the element / its fission tree doesn't add up to the count.
+        '''
+        # Remove as much as we can of this element without fission
+        direct_removals = min(count, self[element])
+        count -= direct_removals
+        self[element] -= direct_removals
+        # Keep this object clean
+        if self[element] == 0:
+            del self[element]
+
+        if count != 0:
+            # If we hit the bottom of the fission tree and aren't done, raise an exception
+            if element.atomic_num == 1:
+                raise FormulaValidityError("Couldn't remove {0} of {1} from formula".format(count, element))
+
+            try:
+                if element.atomic_num % 2 == 0:
+                    child = elements_data.elements_dict[element.atomic_num / 2]
+                    self.remove_fissile_element(child, 2*count)
+                else:
+                    child_A, child_B = (elements_data.elements_dict[element.atomic_num / 2 + 1],
+                                        elements_data.elements_dict[element.atomic_num / 2])
+                    self.remove_fissile_element(child_A, count)
+                    self.remove_fissile_element(child_B, count)
+            except FormulaValidityError:
+                raise FormulaValidityError("Couldn't remove {0} of {1} from formula".format(count, element))
 
 
 class GridPos:
@@ -232,18 +250,6 @@ class Atom:
         self.row = self.pos.row
         self.col = self.pos.col
 
-    def set_element(self, element):
-        '''Mutate this atom to a different element. That element must not have a lower max_bonds
-        than the current number of bonds on this atom
-        '''
-        if element.max_bonds < (self.left_bonds + self.right_bonds
-                                + self.top_bonds + self.bottom_bonds):
-            raise Exception("Cannot set atom {0} to element {1} with insufficient bond count".format(self, element))
-        self.element = element
-        self.atomic_num = element.atomic_num
-        self.symbol = element.symbol
-        self.max_bonds = element.max_bonds
-
 
 class Molecule:
     '''Represents an input/output zone and the molecule constructed therein.
@@ -255,7 +261,7 @@ class Molecule:
         self.num_rows = 4 + 4*large_output
         self.num_cols = 4
         self.grid = [[None, None, None, None] for r in range(self.num_rows)]
-        self.formula = Formula(large_output=large_output)
+        self.formula = Formula()
         self.open_bonds = 0 # A meausure of the # of open bonds available
                             # An atom with no open adjacencies contributes 0 to this count.
 
@@ -459,6 +465,7 @@ class Molecule:
         for atom in other.atoms:
             self.add_atom(atom)
 
+
 class Level:
     '''Parent class for research and production levels.'''
     def __init__(self):
@@ -518,3 +525,205 @@ class ProductionLevel(Level):
         self.dict['has-superbonder'] = False
 
         self.dict['has-recycler'] = False
+
+
+def splittable_sources(given):
+    '''Given a Counter of ints, return a list of ints that can be non-trivially constructed from
+    the given integers, using only series' of addition of integers within 1 of each other, and where
+    no given int is used more times than its count in the Counter.
+    In other words, we're using the inverse fission operation to calculate viable input elements
+    that could have been split any amount to create the given output.
+    '''
+    # NOTE: We ask for a Counter as input because unlike dict's, they implicitly return 0 if
+    #       asked for a key they don't contain, which simplifies our code
+
+    # Tally tracking ints we were given/discover, the max of each we can create at once, and
+    # some additional helper values - as needed we'll create dicts that track how many N-1 ints
+    # we can create at the same time as any possible count of N's. We'll also track the
+    # 'most balanced' such allocation of N vs N-1, which will allow us to properly get counts for
+    # odd ints, as well as assisting in the creation of higher dicts.
+    tally = {}
+    # Dict of ints that were constructable (not just given), and their max counts
+    constructed = {}
+
+    # Keep a running sum of what we were given so we don't waste time on clearly impossible sums
+    givens_sum = 0
+
+    # To avoid the overhead of a priority queue, use one queue for the given ints,
+    # and one queue for ints we obtained by addition (we'll add them in numerical order).
+    # Loop on whichever's next value is lower
+    given_queue = collections.deque(sorted(given.keys()))
+    added_queue = collections.deque()
+    while given_queue or added_queue:
+        # Pop the element we're iterating on - pop from both queues at once if they match
+        if (not added_queue
+            or (given_queue and given_queue[0] < added_queue[0])):
+            n = given_queue.popleft()
+        else:
+            if given_queue and given_queue[0] == added_queue[0]:
+                given_queue.popleft()
+            n = added_queue.popleft()
+
+        # Calculate how many copies of n we can obtain at once
+        if n % 2 == 0:
+            # If n is even, we only need to update its count, based on
+            # the count of n / 2 and however much of n we were given to start
+            component_count = tally[n / 2]['count'] if n / 2 in tally else 0
+            this_count = component_count / 2 + given[n]
+        else:
+            # To count odd n, we must first make a dict that pairs the max # of n / 2 that can
+            # be created for any given count of n / 2 + 1. We can do this recursively off
+            # a previous such dict. When creating this dict we will also store the count
+            # of n / 2 + 1 for which there can simultaneously be created a most closely balanced
+            # count of n / 2. This can be used directly to count n and also to speed up
+            # the recursive creation of dicts.
+            # However we can skip this if either of n / 2 or n / 2 + 1 are unavailable.
+            # Note that even if both are available they may not be addable so our count could
+            # still come out to 0
+            upper_child, lower_child = n / 2 + 1, n / 2
+            if upper_child in tally and lower_child in tally:
+                # In this case, calculate and store upper_child's neighbour dict
+                tally[upper_child]['neighbour_counts'] = {}
+                if upper_child == 2: # Calc 2->1 dict
+                    balanced_upper_count, min_count_in_best_balance = -1, -1
+                    for upper_count in range(1, tally[upper_child]['count'] + 1):
+                        lower_count = (tally[lower_child]['count']
+                                       - 2*max(upper_count - given[upper_child], 0))
+                        tally[upper_child]['neighbour_counts'][upper_count] = lower_count
+
+                        # Check how balanced this allocation is
+                        worst_count = min(upper_count, lower_count)
+                        if worst_count >= min_count_in_best_balance:
+                            balanced_upper_count = upper_count
+                            min_count_in_best_balance = worst_count
+                    tally[upper_child]['balanced_count'] = balanced_upper_count
+                elif upper_child == 3: # Calc 3->2 dict
+                    balanced_upper_count, min_count_in_best_balance = -1, -1
+                    for upper_count in range(1, tally[upper_child]['count'] + 1):
+                        nongiven_upper_count = max(upper_count - given[upper_child], 0)
+                        # 2s count = (2s constructable given 1s used in 3s) - (2s used in 3s)
+                        lower_count = (given[2] + (given[1] - nongiven_upper_count) / 2
+                                       - nongiven_upper_count)
+                        tally[upper_child]['neighbour_counts'][upper_count] = lower_count
+
+                        # Check how balanced this allocation is
+                        worst_count = min(upper_count, lower_count)
+                        if worst_count >= min_count_in_best_balance:
+                            balanced_upper_count = upper_count
+                            min_count_in_best_balance = worst_count
+                    # Store the most balanced count for upper_child
+                    tally[upper_child]['balanced_count'] = balanced_upper_count
+                # If either the upper child or the lower child had no compound components,
+                # the upper_child's neighbour_counts dict is just the max count of lower_child,
+                # regardless of the count of upper_child
+                elif (tally[upper_child]['count'] == given[upper_child]
+                      or tally[lower_child]['count'] == given[lower_child]):
+                    tally[upper_child]['neighbour_counts'] = {
+                            i: tally[lower_child]['count']
+                            for i in range(1, tally[upper_child]['count'] + 1) }
+                    # Since the lower_child gets the same count no matter what, just maximize
+                    # upper_child's count for the 'balanced' allocation
+                    tally[upper_child]['balanced_count'] = tally[upper_child]['count']
+                # Otherwise, based on our recursion principle, the upper child's upper
+                # child must already have its neighbour_counts dict set. Use that to calculate
+                # the upper child's neighbour_counts. The algorithm for this depends on which of
+                # upper_child/lower_child is even.
+                # We also have a couple of base cases to handle when building the neighbour dict
+                # dict for 3->2 and 2-> 1, since in those cases lower_child is also a component
+                # of upper_child
+                elif upper_child % 2 == 0:
+                    # If the upper child is even, calculate how much of lower_child's components
+                    # are used up by any valid count of upper_child, and thus the max
+                    # lower_child count for that count of upper_child.
+                    # Call A upper_child / 2 and B the other (lower) component of lower_child
+                    A = upper_child / 2
+                    balanced_upper_count, min_count_in_best_balance = -1, -1
+                    for upper_count in range(1, tally[upper_child]['count'] + 1):
+                        if upper_count <= given[upper_child]:
+                            lower_count = tally[lower_child]['count']
+                        else:
+                            A_used_in_upper = 2*(upper_count - given[upper_child])
+                            if A_used_in_upper == tally[A]['count']:
+                                lower_count = given[lower_child]
+                            else:
+                                # Search to the right of the original balance point and/or our
+                                # new A limit, to find a balance given the unusable As:
+                                start_idx = max(tally[A]['balanced_count'], A_used_in_upper + 1)
+                                built_lower_count = 0
+                                for used_A in range(start_idx, tally[A]['count'] + 1):
+                                    worst_count = min(used_A - A_used_in_upper,
+                                                      tally[A]['neighbour_counts'][used_A])
+                                    built_lower_count = max(built_lower_count, worst_count)
+                                lower_count = built_lower_count + given[lower_child]
+                        tally[upper_child]['neighbour_counts'][upper_count] = lower_count
+
+                        # Check how balanced this allocation is
+                        worst_count = min(upper_count, lower_count)
+                        if worst_count >= min_count_in_best_balance:
+                            balanced_upper_count = upper_count
+                            min_count_in_best_balance = worst_count
+                    # Store the most balanced count for upper child
+                    tally[upper_child]['balanced_count'] = balanced_upper_count
+                else:
+                    # If the upper child is odd, call its subchildren A and B, where B =
+                    # lower_child / 2. Using A's neighbour_counts dict, calculate how much B and
+                    # from that how much lower_child we can make for any valid count of
+                    # upper_child
+                    A = upper_child / 2 + 1
+                    # For each possible count of upper_child, calculate how many copies of
+                    # lower_child can be simultaneously constructed from the leftovers
+                    # Also track the 'most balanced' count we can assign to upper_child
+                    balanced_upper_count, min_count_in_best_balance = -1, -1
+                    for upper_count in range(1, tally[upper_child]['count'] + 1):
+                        if upper_count <= given[upper_child]:
+                            lower_count = tally[lower_child]['count']
+                        else:
+                            used_A = used_B = upper_count - given[upper_child]
+                            available_B = (tally[A]['neighbour_counts'][used_A] - used_A)
+                            lower_count = available_B / 2 + given[lower_child]
+                        tally[upper_child]['neighbour_counts'][upper_count] = lower_count
+
+                        # Check how balanced this allocation is
+                        worst_count = min(upper_count, lower_count)
+                        if worst_count >= min_count_in_best_balance:
+                            balanced_upper_count = upper_count
+                            min_count_in_best_balance = worst_count
+                    # Store the most balanced count for upper child
+                    tally[upper_child]['balanced_count'] = balanced_upper_count
+
+                # Calculate the count of n based on upper_child's most balanced count
+                balanced_upper_count = tally[upper_child]['balanced_count']
+                this_count = (min(balanced_upper_count,
+                                  tally[upper_child]['neighbour_counts'][balanced_upper_count])
+                              + given[n])
+            else:
+                # If n only occurred as an input and not a compound, set it to the given count
+                # The n = 1 case is handled here since 1 can never be compound
+                # We don't need to calculate its neighbour dict in this case.
+                this_count = given[n]
+
+        # If the count came out to 0, ignore this int
+        if this_count == 0:
+            continue
+        # Update the tally with the discovered count
+        tally[n] = {'count': this_count}
+        #  Add this int to the output dict if it was possible to construct
+        # (not just obtained from the givens)
+        if this_count != given[n]:
+            constructed[n] = this_count
+
+        # Add any viable sums (restricted to valid atomic masses) obtained from n to the queue
+        # As a mini-optimization, we won't add odd numbers to the queue that exceed the sum of
+        # the givens up to n
+        givens_sum += n*given[n]
+        # If n - 1 is in the tally, add 2n - 1 to the queue
+        if (n - 1 in tally
+            and (2*n - 1 <= 109 or 2*n - 1 in (201, 203))
+            and 2*n - 1 <= givens_sum):
+            added_queue.append(2*n - 1)
+        # If the count for n was at least 2, add 2n to the queue
+        if tally[n]['count'] >= 2 and (2*n <= 109 or 2*n in (200, 202)):
+            added_queue.append(2*n)
+
+    # Once we've looped over all possible sums, return a dict of the relevant ints and their counts
+    return constructed
