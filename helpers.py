@@ -133,6 +133,16 @@ class Formula(collections.Counter):
 
         return allowed_endpoint_count >= 0
 
+    def fission_sources(self):
+        '''Return a dict of atomic masses and their counts for all elements that could have fission
+        performed on them to obtain part of this formula.
+        The heavy lifting of this method is tucked away at the bottom of this file in
+        splittable_sources since it's a monster of a function.
+        '''
+        output_masses = collections.Counter({e.atomic_num: count for e, count in self.items()
+                                             if count > 0})
+        return splittable_sources(output_masses)
+
     def remove_fissile_element(self, element, count):
         '''Used while converting an output formula to an input formula via inverse fission.
         Given a fissile element and count, remove the target count of the element from
@@ -164,9 +174,21 @@ class Formula(collections.Counter):
             except FormulaValidityError:
                 raise FormulaValidityError("Couldn't remove {0} of {1} from formula".format(count, element))
 
+# Enum-esque directional vars for convenience
+DIRECTIONS = UP, RIGHT, DOWN, LEFT = (0, 1, 2, 3) # Python, baby
+
+# Doing a proper Direction(Int) subclass requires too much boilerplate for my taste
+def opposite_dir(dir):
+    '''Given an Int representing a direction return its opposite direction.'''
+    if dir % 2 == 0:
+        return 2 - dir # UP <-> DOWN
+    else:
+        return 4 - dir # LEFT <-> RIGHT
 
 class GridPos:
-    '''Represent a 0-indexed (row, col) position within a 4x4 input/output zone.'''
+    '''Represent a 0-indexed (row, col) position within an input/output zone.
+    Indices increase from left to right and top to bottom.
+    '''
     def __init__(self, row, col, large_output=False):
         self.row = row
         self.col = col
@@ -186,63 +208,60 @@ class GridPos:
         return hash((self.row, self.col))
 
     def is_valid(self):
-        '''Check that this position consists of integer positions within the zone's grid.
-        '''
+        '''Check that this position consists of integer positions within the zone's grid.'''
         return isinstance(self.row, int) and isinstance(self.col, int) \
                and (0 <= self.row < self.num_rows) and (0 <= self.col < self.num_cols)
 
+    def neighbor(self, dir):
+        '''Return the neighbor GridPos in the indicated direction, or None if out-of-bounds.'''
+        if dir == UP:
+            r, c = self.row - 1, self.col
+        elif dir == RIGHT:
+            r, c = self.row, self.col + 1
+        elif dir == DOWN:
+            r, c = self.row + 1, self.col
+        elif dir == LEFT:
+            r, c = self.row, self.col - 1
+        else:
+            raise ValueError("Invalid direction: " + str(dir))
+
+        if 0 <= r < self.num_rows and 0 <= c < self.num_cols:
+            return GridPos(r, c, self.large_output)
+        return None
+
     def neighbors(self):
-        '''Return all orthogonally adjacent positions within the zone's grid.
-        '''
-        result = []
-        for row, col in [(self.row, self.col - 1), # left
-                         (self.row, self.col + 1), # right
-                         (self.row - 1, self.col), # top
-                         (self.row + 1, self.col)]: # bottom
-            if 0 <= row < self.num_rows and 0 <= col < self.num_cols:
-                result.append(GridPos(row, col, large_output=self.large_output))
-        return result
+        '''Return all orthogonally adjacent positions within the zone's grid.'''
+        return [p for p in (self.neighbor(dir) for dir in DIRECTIONS) if p is not None]
+
+    def dirs_and_neighbors(self):
+        '''Return a list of (dir, pos) pairs for each neighboring position within the grid.'''
+        return [(d, p) for d, p in ((_d, self.neighbor(_d)) for _d in DIRECTIONS) if p is not None]
 
 
 class Atom:
     '''Represent an Atom, including its element, grid position, and attached bonds.
     '''
     def __init__(self, element, pos):
-        self.element = element
-        self.pos = pos
-        self.left_bonds = 0
-        self.right_bonds = 0
-        self.top_bonds = 0
-        self.bottom_bonds = 0
-
-        # Exposing some sub-attributes for convenience
-        self.atomic_num = element.atomic_num
-        self.symbol = element.symbol
-        self.max_bonds = element.max_bonds
-        self.row = pos.row
-        self.col = pos.col
+        self.bonds = [0, 0, 0, 0]
+        self.set_element(element)
+        self.set_pos(pos)
 
     def __str__(self):
         return self.symbol.rjust(2) # Pad element symbol to two chars
 
     def __repr__(self):
-        return 'Atom({0}, {1}, {2}, {3}, {4}, {5})'.format(self.symbol, self.pos,
-                                                           self.left_bonds, self.top_bonds,
-                                                           self.right_bonds, self.bottom_bonds)
+        return 'Atom({0}, {1}, {2})'.format(self.symbol, self.pos, self.bonds)
 
     def get_json_str(self):
         '''Return a string representing this atom in the level json's format.'''
         return '{0}{1}{2}{3}{4}'.format(self.col, self.row,
                                         str(self.atomic_num).rjust(3, '0'),
-                                        self.right_bonds,
-                                        self.bottom_bonds)
+                                        self.bonds[RIGHT],
+                                        self.bonds[DOWN])
 
     def remaining_bonds(self):
         '''Return the # of remaining bonds this atom is allowed.'''
-        return self.max_bonds - self.left_bonds \
-                              - self.right_bonds \
-                              - self.top_bonds \
-                              - self.bottom_bonds
+        return self.max_bonds - sum(self.bonds)
 
     def set_pos(self, pos):
         '''Change this atom's position in the grid.'''
@@ -250,6 +269,16 @@ class Atom:
         self.row = self.pos.row
         self.col = self.pos.col
 
+    def set_element(self, element):
+        if sum(self.bonds) > element.max_bonds:
+            raise ValueError("Too many bonds to change atom {} to element {}".format(self, element))
+
+        self.element = element
+
+        # Exposing some sub-attributes for convenience
+        self.atomic_num = element.atomic_num
+        self.symbol = element.symbol
+        self.max_bonds = element.max_bonds
 
 class Molecule:
     '''Represents an input/output zone and the molecule constructed therein.
@@ -262,8 +291,10 @@ class Molecule:
         self.num_cols = 4
         self.grid = [[None, None, None, None] for r in range(self.num_rows)]
         self.formula = Formula()
-        self.open_bonds = 0 # A meausure of the # of open bonds available
-                            # An atom with no open adjacencies contributes 0 to this count.
+        # To optimize the performance of available_positions(), we'll roughly track the # of open
+        # bonds available on this molecule.
+        # An atom with no open adjacencies in the grid contributes 0 to this count.
+        self.open_bonds = 0
 
     def __getitem__(self, pos):
         '''Return the atom at the specified grid position or None.'''
@@ -272,6 +303,10 @@ class Molecule:
     def __setitem__(self, pos, item):
         '''Set the specified grid position (item should be None or an Atom).'''
         self.grid[pos.row][pos.col] = item
+
+    def __iter__(self):
+        for atom in self.atoms:
+            yield atom
 
     def __len__(self):
         '''Return the # of atoms in this molecule.'''
@@ -295,12 +330,12 @@ class Molecule:
 
                 bond_str = ' '
                 if left_atom is not None and right_atom is not None \
-                   and left_atom.right_bonds != right_atom.left_bonds:
+                   and left_atom.bonds[RIGHT] != right_atom.bonds[LEFT]:
                     bond_str = '?'
-                elif left_atom is not None and left_atom.right_bonds != 0:
-                    bond_str = str(left_atom.right_bonds)
-                elif right_atom is not None and right_atom.left_bonds != 0:
-                    bond_str = str(right_atom.left_bonds)
+                elif left_atom is not None and left_atom.bonds[RIGHT] != 0:
+                    bond_str = str(left_atom.bonds[RIGHT])
+                elif right_atom is not None and right_atom.bonds[LEFT] != 0:
+                    bond_str = str(right_atom.bonds[LEFT])
                 if c < self.num_cols - 1:
                     result += ' ' + bond_str + ' '
             result += '|\n'
@@ -315,12 +350,12 @@ class Molecule:
                         bottom_atom = None
                     bond_str = '  '
                     if top_atom is not None and bottom_atom is not None \
-                       and top_atom.bottom_bonds != bottom_atom.top_bonds:
+                       and top_atom.bonds[DOWN] != bottom_atom.bonds[UP]:
                         bond_str = '??'
-                    elif top_atom is not None and top_atom.bottom_bonds != 0:
-                        bond_str = ' ' + str(top_atom.bottom_bonds)
-                    elif bottom_atom is not None and bottom_atom.top_bonds != 0:
-                        bond_str = ' ' + str(bottom_atom.top_bonds)
+                    elif top_atom is not None and top_atom.bonds[DOWN] != 0:
+                        bond_str = ' ' + str(top_atom.bonds[DOWN])
+                    elif bottom_atom is not None and bottom_atom.bonds[UP] != 0:
+                        bond_str = ' ' + str(bottom_atom.bonds[UP])
                     result += bond_str
                     if c < self.num_cols - 1:
                         result += 3*' '
@@ -336,6 +371,22 @@ class Molecule:
         for atom in self.atoms:
             result += atom.get_json_str() + ';'
         return result
+
+    def update_formula(self):
+        '''To be called after mutating any atom elements. Update the formula of this molecule.'''
+        self.formula = Formula()
+        for atom in self.atoms:
+            self.formula[atom.element] += 1
+
+    def update_open_bonds(self):
+        '''Update the count of open bonds. Since we only care about updating it well
+        enough to know when it's 0, we'll ignore the triple bond limit, and count any open side of
+        an atom as adding the remainder of its max bond count to the open bonds.
+        '''
+        self.open_bonds = 0
+        for atom in self.atoms:
+            if any(self[pos] is None for pos in atom.pos.neighbors()):
+                self.open_bonds += atom.remaining_bonds() # Not exact but we don't need it to be
 
     def open_positions(self):
         '''Return a list of valid grid positions where an atom could be added to this molecule.'''
@@ -356,11 +407,13 @@ class Molecule:
         return result_dict.keys()
 
     def add_atom(self, new_atom):
-        '''Add the given Atom to this molecule. The Atom's position must be open in this molecule.
-        Add any bonds specified in the incoming atom.
+        '''Adds the given Atom to this molecule. The Atom's position must be open in this molecule.
+        Also adds any bonds specified by the incoming atom to its neighboring atoms.
+        For convenience of more complex operations, it is allowable to add an atom with unfulfilled
+        bonds or which is not connected to the rest of the molecule.
         '''
         if self[new_atom.pos] is not None:
-            raise Exception("Conflict with existing atom; cannot add {0} to \n{1}".format(repr(atom), self))
+            raise Exception("Conflict with existing atom; cannot add {0} to \n{1}".format(repr(new_atom), self))
         self[new_atom.pos] = new_atom
 
         # Quick helper to check if an atom within this molecule's grid has at least 1 open side
@@ -371,22 +424,14 @@ class Molecule:
         if has_open_side(new_atom):
             self.open_bonds += new_atom.remaining_bonds()
 
-        for pos in new_atom.pos.neighbors():
+        # Add bonds to neighbours matching the bonds indicated on this atom
+        for dir, pos in new_atom.pos.dirs_and_neighbors():
             adj_atom = self[pos]
-
-            # Add bonds to any neighbours of the added atom
             if adj_atom is not None:
-                if adj_atom.col < new_atom.col:
-                    adj_atom.right_bonds = added_bonds = new_atom.left_bonds
-                elif adj_atom.col > new_atom.col:
-                    adj_atom.left_bonds = added_bonds = new_atom.right_bonds
-                elif adj_atom.row < new_atom.row:
-                    adj_atom.bottom_bonds = added_bonds = new_atom.top_bonds
-                else:
-                    adj_atom.top_bonds = added_bonds = new_atom.bottom_bonds
-
+                adj_atom.bonds[opposite_dir(dir)] = new_atom.bonds[dir]
                 # Subtract the bond we just added from the molecule's 'open bonds'
-                self.open_bonds -= added_bonds
+                self.open_bonds -= new_atom.bonds[dir]
+
                 # If we closed off the neighbor's last open face, we've additionally removed
                 # however many bonds it now has left from the molecule's 'open' bonds
                 if not has_open_side(adj_atom):
@@ -410,24 +455,19 @@ class Molecule:
         stack = [self.atoms[0]]
         # We don't have to actually 'visit' every atom, seeing them as neighbors is sufficient
         seen = {self.atoms[0].pos: True} # Track the grid positions of seen connected atoms
-        while True:
+        while stack:
             if len(seen) == len(self):
                 return True
-            elif not stack:
-                return False
 
             atom = stack.pop()
             # Check for connected neighbors. When we see an unseen connected atom, add it to the
             # stack
-            for adj_pos in [p for p in atom.pos.neighbors() if p not in seen]:
-                adj_atom = self[adj_pos]
-                if adj_atom is not None:
-                    if (adj_atom.col < atom.col and atom.left_bonds != 0) \
-                         or (adj_atom.col > atom.col and atom.right_bonds != 0) \
-                         or (adj_atom.row < atom.row and atom.top_bonds != 0) \
-                         or (adj_atom.row > atom.row and atom.bottom_bonds != 0):
-                       seen[adj_pos] = True
-                       stack.append(adj_atom)
+            for dir, adj_pos in atom.pos.dirs_and_neighbors():
+                if atom.bonds[dir] != 0 and adj_pos not in seen:
+                    seen[adj_pos] = True
+                    adj_atom = self[adj_pos]
+                    stack.append(adj_atom)
+        return False
 
     def shift(self, rows=0, cols=0):
         '''Shift the current contents of this molecule downward/rightward by the specified number
@@ -448,10 +488,7 @@ class Molecule:
             self[atom.pos] = atom
 
         # Recount open bonds once we're done since some atoms may no longer have open sides
-        self.open_bonds = 0
-        for atom in self.atoms:
-            if any(self[pos] is None for pos in atom.pos.neighbors()):
-                self.open_bonds += atom.remaining_bonds()
+        self.update_open_bonds()
 
     def add_molecule(self, other):
         '''Add the specified molecule to this molecule. Must not have any atoms in conflicting
@@ -467,7 +504,7 @@ class Molecule:
 
 
 class Level:
-    '''Parent class for research and production levels.'''
+    '''Parent class for Research and Production levels.'''
     def __init__(self):
         self.dict = {}
         self.dict['name'] = 'RandomlyGenerated'
@@ -528,13 +565,13 @@ class ProductionLevel(Level):
 
 
 def splittable_sources(given):
-    '''Given a Counter of ints, return a list of ints that can be non-trivially constructed from
-    the given integers, using only series' of addition of integers within 1 of each other, and where
-    no given int is used more times than its count in the Counter.
+    '''Given a Counter of ints, return a dict of ints and their total counts that can be
+    non-trivially constructed from the given integers, using only series' of addition of integers
+    within 1 of each other, and where no given int is used more times than its count in the Counter.
     In other words, we're using the inverse fission operation to calculate viable input elements
-    that could have been split any amount to create the given output.
+    that could have been split any (non-0) # of times to create part of the given output.
     '''
-    # NOTE: We ask for a Counter as input because unlike dict's, they implicitly return 0 if
+    # NOTE: We ask for a Counter as input because unlike dicts, they implicitly return 0 if
     #       asked for a key they don't contain, which simplifies our code
 
     # Tally tracking ints we were given/discover, the max of each we can create at once, and

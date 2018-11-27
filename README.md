@@ -41,19 +41,23 @@ Default creates a Research level, printing the importable level code to cmd line
 
 --nuclear: Shortcut for combining `--fission` and `--fusion`.
 
-e.g. `python level_generator.py --view -d 0 --inputs 1 --elements C O H`
+--symmetric: Use symmetric molecules
+
+--polymer: Use polymer molecules
+
+e.g. `python level_generator.py --view -d 0 --inputs 1 --elements C O H --fission`
 
 TBA:
 
- --sorting
-
  --random (random inputs)
+
+ --sorting
 
  --waste (imbalanced reaction that requires storing waste atoms in the reactor)
 
 ## Behaviour
 
-The process for generating a level is as follows:
+The process for generating a level is roughly as follows:
 
 * Randomly generate level features (e.g. fuser) and # of output zones (if unspecified in args)
 

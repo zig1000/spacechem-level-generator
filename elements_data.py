@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
+
 from collections import namedtuple
 
 '''Immutable class representing a SpaceChemical element, subclassed off namedtuple.'''
