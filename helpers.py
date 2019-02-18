@@ -4,11 +4,12 @@
 import base64
 import collections
 import copy
-import elements_data
 import fractions
 import gzip
+import io
 import json
-import StringIO
+
+import elements_data
 
 # Element class is defined in elements_data.py to avoid circular dependencies
 
@@ -49,11 +50,14 @@ class Formula(collections.Counter):
 
     def least_common_formula(self):
         '''Return a new formula which is this formula divided by the GCD of its element counts'''
+        gcd = 0
+        for v in self.values():
+            gcd = fractions.gcd(v, gcd)
+
         new_formula = copy.copy(self)
-        if new_formula:
-            gcd = reduce(fractions.gcd, new_formula.values())
+        if gcd > 1: # Make sure we don't divide by 0 in empty case
             for e in new_formula.elements():
-                new_formula[e] = new_formula[e] / gcd
+                new_formula[e] = new_formula[e] // gcd
         return new_formula
 
     def get_json_str(self):
@@ -66,10 +70,10 @@ class Formula(collections.Counter):
                           key=lambda e: 0 if e.symbol == 'C'
                                         else 1 if e.symbol == 'H'
                                         else e.symbol)
-        for element in elements:
-            result += element.symbol
-            if self[element] != 1:
-                result += '~' + str(self[element]).rjust(2, '0')
+        for e in elements:
+            result += e.symbol
+            if self[e] != 1:
+                result += '~' + str(self[e]).rjust(2, '0')
         return result
     __str__ = get_json_str # For debugging convenience
 
@@ -78,12 +82,12 @@ class Formula(collections.Counter):
         Empty formulas are considered invalid. Default 4x4 zone, optionally large (8x4) output zone.
         '''
         # Verify size constraints
-        if not (1 <= self.num_atoms() <= 16 + 16*large_output):
+        if not 1 <= self.num_atoms() <= 16 + 16*large_output:
             return False
 
         # We'll calculate validity based on whether there are enough bonds in the atom list to form
-        # a minimally-connected molecule. To check this, we start with a simple linearly connected
-        # molecule with 2 endpoints. An endpoint element has max bonds 1, while elements with 3 or
+        # a minimally-connected molecule. To check this, consider a simple linearly connected
+        # molecule with 2 endpoints. An "endpoint" element has max bonds 1, while elements with 3 or
         # 4+ max bonds each allow for 1 or 2 additional endpoints in the molecule, respectively.
         # Elements of max bonds 2 do not affect the count and thus do not affect the validity of
         # the formula, apart from the 16 or 32-atom limit of the zone.
@@ -93,7 +97,7 @@ class Formula(collections.Counter):
         # 4x4 zone it appears that this maximum can be reached with any composition of 3 vs 4 bond
         # atoms, and a simplifying assumption is made that this holds for the 8x4 case.
         # The cases for which an incorrect return value by this method could cause an exception
-        # would in any case be prohibitively rare and of little concern, and well worth the tradeoff
+        # would in any case be prohibitively rare and of little concern, and imo worth the tradeoff
         # for O(k) runtime (where k is the # of unique elements in the formula).
 
         # Due to the limited sizes of the zones, each max bound count element can only contribute
@@ -114,11 +118,10 @@ class Formula(collections.Counter):
                 return self.num_atoms() == 1
             elif element.max_bonds == 1:
                 allowed_endpoint_count -= self[element]
-            # Count one extra endpoint per atom with bond count 3 or more (up to limit)
+            # Count one extra allowed endpoint per atom with bond count 3 or more (up to limit)
             elif element.max_bonds >= 3:
                 # As long as our formula has no negatives this should be fine
-                extra_endpoints = min(self[element],
-                                      extra_endpoints_dict[3])
+                extra_endpoints = min(self[element], extra_endpoints_dict[3])
                 allowed_endpoint_count += extra_endpoints
                 extra_endpoints_dict[3] -= extra_endpoints
 
@@ -160,30 +163,26 @@ class Formula(collections.Counter):
         if count != 0:
             # If we hit the bottom of the fission tree and aren't done, raise an exception
             if element.atomic_num == 1:
-                raise FormulaValidityError("Couldn't remove {0} of {1} from formula".format(count, element))
+                raise FormulaValidityError(f"Couldn't remove {count} of {element} from formula")
 
             try:
                 if element.atomic_num % 2 == 0:
-                    child = elements_data.elements_dict[element.atomic_num / 2]
+                    child = elements_data.elements_dict[element.atomic_num // 2]
                     self.remove_fissile_element(child, 2*count)
                 else:
-                    child_A, child_B = (elements_data.elements_dict[element.atomic_num / 2 + 1],
-                                        elements_data.elements_dict[element.atomic_num / 2])
+                    child_A, child_B = (elements_data.elements_dict[element.atomic_num // 2 + 1],
+                                        elements_data.elements_dict[element.atomic_num // 2])
                     self.remove_fissile_element(child_A, count)
                     self.remove_fissile_element(child_B, count)
             except FormulaValidityError:
-                raise FormulaValidityError("Couldn't remove {0} of {1} from formula".format(count, element))
+                raise FormulaValidityError(f"Couldn't remove {count} of {element} from formula")
 
 # Enum-esque directional vars for convenience
 DIRECTIONS = UP, RIGHT, DOWN, LEFT = (0, 1, 2, 3) # Python, baby
 
-# Doing a proper Direction(Int) subclass requires too much boilerplate for my taste
 def opposite_dir(dir):
     '''Given an Int representing a direction return its opposite direction.'''
-    if dir % 2 == 0:
-        return 2 - dir # UP <-> DOWN
-    else:
-        return 4 - dir # LEFT <-> RIGHT
+    return (dir + 2) % 4
 
 class GridPos:
     '''Represent a 0-indexed (row, col) position within an input/output zone.
@@ -197,7 +196,7 @@ class GridPos:
         self.num_cols = 4
 
     def __str__(self):
-        return '({0}, {1})'.format(self.row, self.col)
+        return f'({self.row}, {self.col})'
     __repr__ = __str__
 
     # __eq__ and __hash__ so we can use GridPos as dictionary keys
@@ -223,7 +222,7 @@ class GridPos:
         elif dir == LEFT:
             r, c = self.row, self.col - 1
         else:
-            raise ValueError("Invalid direction: " + str(dir))
+            raise ValueError(f"Invalid direction: {dir}")
 
         if 0 <= r < self.num_rows and 0 <= c < self.num_cols:
             return GridPos(r, c, self.large_output)
@@ -250,7 +249,7 @@ class Atom:
         return self.symbol.rjust(2) # Pad element symbol to two chars
 
     def __repr__(self):
-        return 'Atom({0}, {1}, {2})'.format(self.symbol, self.pos, self.bonds)
+        return f'Atom({self.symbol}, {self.pos}, {self.bonds})'
 
     def get_json_str(self):
         '''Return a string representing this atom in the level json's format.'''
@@ -271,7 +270,7 @@ class Atom:
 
     def set_element(self, element):
         if sum(self.bonds) > element.max_bonds:
-            raise ValueError("Too many bonds to change atom {} to element {}".format(self, element))
+            raise ValueError(f"Too many bonds to change atom {self} to element {element}")
 
         self.element = element
 
@@ -367,7 +366,7 @@ class Molecule:
 
     def get_json_str(self):
         '''Return a string representing this molecule in the level json's format.'''
-        result = self.name + ';' + self.formula.get_json_str() + ';'
+        result = f'{self.name};{self.formula.get_json_str()};'
         for atom in self.atoms:
             result += atom.get_json_str() + ';'
         return result
@@ -404,7 +403,7 @@ class Molecule:
                 for pos in atom.pos.neighbors():
                    if self[pos] is None and pos not in result_dict:
                       result_dict[pos] = True
-        return result_dict.keys()
+        return list(result_dict.keys())
 
     def add_atom(self, new_atom):
         '''Adds the given Atom to this molecule. The Atom's position must be open in this molecule.
@@ -413,7 +412,7 @@ class Molecule:
         bonds or which is not connected to the rest of the molecule.
         '''
         if self[new_atom.pos] is not None:
-            raise Exception("Conflict with existing atom; cannot add {0} to \n{1}".format(repr(new_atom), self))
+            raise Exception(f"Conflict with existing atom; cannot add {repr(new_atom)} to \n{self}")
         self[new_atom.pos] = new_atom
 
         # Quick helper to check if an atom within this molecule's grid has at least 1 open side
@@ -479,7 +478,7 @@ class Molecule:
         for atom in self.atoms:
             if (atom.row + rows < 0 or atom.row + rows > self.num_rows) \
                or (atom.col + cols < 0 or atom.col + cols > self.num_cols):
-               raise Exception('Cannot shift molecule {0} by {1} rows and {2} cols'.format(self, rows, cols))
+               raise Exception(f'Cannot shift molecule\n{self}\nby {rows} rows and {cols} cols')
 
         # Wipe the grid clean and re-add the atoms in the new positions
         self.grid = [[None, None, None, None] for r in range(self.num_rows)]
@@ -496,7 +495,7 @@ class Molecule:
         '''
         # Check for conflicts
         if any(self[atom.pos] is not None for atom in other.atoms):
-            raise Exception('Cannot add molecule \n{0} to molecule \n{1}; conflicting atoms'.format(other, self))
+            raise Exception(f'Cannot add molecule\n{other} to molecule\n{self}; conflicting atoms')
 
         # Add the new atoms
         for atom in other.atoms:
@@ -522,10 +521,10 @@ class Level:
 
     def get_code(self):
         '''Get the mission code - gzip then b64 the level json.'''
-        out = StringIO.StringIO()
+        out = io.BytesIO()
         with gzip.GzipFile(fileobj=out, mode="w") as f:
-            f.write(json.dumps(self.dict))
-        return base64.b64encode(out.getvalue())
+            f.write(json.dumps(self.dict).encode('utf-8'))
+        return base64.b64encode(out.getvalue()).decode()
 
 class ResearchLevel(Level):
     def __init__(self):
@@ -605,19 +604,19 @@ def splittable_sources(given):
         if n % 2 == 0:
             # If n is even, we only need to update its count, based on
             # the count of n / 2 and however much of n we were given to start
-            component_count = tally[n / 2]['count'] if n / 2 in tally else 0
-            this_count = component_count / 2 + given[n]
+            component_count = tally[n // 2]['count'] if n // 2 in tally else 0
+            this_count = component_count // 2 + given[n]
         else:
-            # To count odd n, we must first make a dict that pairs the max # of n / 2 that can
-            # be created for any given count of n / 2 + 1. We can do this recursively off
+            # To count odd n, we must first make a dict that pairs the max # of n // 2 that can
+            # be created for any given count of n // 2 + 1. We can do this recursively off
             # a previous such dict. When creating this dict we will also store the count
-            # of n / 2 + 1 for which there can simultaneously be created a most closely balanced
-            # count of n / 2. This can be used directly to count n and also to speed up
+            # of n // 2 + 1 for which there can simultaneously be created a most closely balanced
+            # count of n // 2. This can be used directly to count n and also to speed up
             # the recursive creation of dicts.
-            # However we can skip this if either of n / 2 or n / 2 + 1 are unavailable.
+            # However we can skip this if either of n // 2 or n // 2 + 1 are unavailable.
             # Note that even if both are available they may not be addable so our count could
             # still come out to 0
-            upper_child, lower_child = n / 2 + 1, n / 2
+            upper_child, lower_child = n // 2 + 1, n // 2
             if upper_child in tally and lower_child in tally:
                 # In this case, calculate and store upper_child's neighbour dict
                 tally[upper_child]['neighbour_counts'] = {}
@@ -639,7 +638,7 @@ def splittable_sources(given):
                     for upper_count in range(1, tally[upper_child]['count'] + 1):
                         nongiven_upper_count = max(upper_count - given[upper_child], 0)
                         # 2s count = (2s constructable given 1s used in 3s) - (2s used in 3s)
-                        lower_count = (given[2] + (given[1] - nongiven_upper_count) / 2
+                        lower_count = (given[2] + (given[1] - nongiven_upper_count) // 2
                                        - nongiven_upper_count)
                         tally[upper_child]['neighbour_counts'][upper_count] = lower_count
 
@@ -672,8 +671,8 @@ def splittable_sources(given):
                     # If the upper child is even, calculate how much of lower_child's components
                     # are used up by any valid count of upper_child, and thus the max
                     # lower_child count for that count of upper_child.
-                    # Call A upper_child / 2 and B the other (lower) component of lower_child
-                    A = upper_child / 2
+                    # Call A upper_child // 2 and B the other (lower) component of lower_child
+                    A = upper_child // 2
                     balanced_upper_count, min_count_in_best_balance = -1, -1
                     for upper_count in range(1, tally[upper_child]['count'] + 1):
                         if upper_count <= given[upper_child]:
@@ -703,10 +702,10 @@ def splittable_sources(given):
                     tally[upper_child]['balanced_count'] = balanced_upper_count
                 else:
                     # If the upper child is odd, call its subchildren A and B, where B =
-                    # lower_child / 2. Using A's neighbour_counts dict, calculate how much B and
+                    # lower_child // 2. Using A's neighbour_counts dict, calculate how much B and
                     # from that how much lower_child we can make for any valid count of
                     # upper_child
-                    A = upper_child / 2 + 1
+                    A = upper_child // 2 + 1
                     # For each possible count of upper_child, calculate how many copies of
                     # lower_child can be simultaneously constructed from the leftovers
                     # Also track the 'most balanced' count we can assign to upper_child
@@ -717,7 +716,7 @@ def splittable_sources(given):
                         else:
                             used_A = used_B = upper_count - given[upper_child]
                             available_B = (tally[A]['neighbour_counts'][used_A] - used_A)
-                            lower_count = available_B / 2 + given[lower_child]
+                            lower_count = available_B // 2 + given[lower_child]
                         tally[upper_child]['neighbour_counts'][upper_count] = lower_count
 
                         # Check how balanced this allocation is

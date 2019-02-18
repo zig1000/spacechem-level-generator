@@ -156,7 +156,7 @@ class ElementDict:
         elif isinstance(key, str):
             return self.symbol_element_dict[key]
         else:
-            raise TypeError("Elements must be looked up by atomic # or symbol; received {0}".format(key))
+            raise TypeError(f"Elements must be looked up by atomic # or symbol; received {key}")
 
     def __len__(self):
         return len(self.atomic_num_element_dict.values())
@@ -165,6 +165,6 @@ class ElementDict:
         return iter(self.atomic_num_element_dict.values())
 
     def __str__(self):
-        return '[' + ', '.join([str(e) for e in self]) + ']'
+        return f"[{', '.join(str(e) for e in self)}]"
 
 elements_dict = ElementDict(elements)

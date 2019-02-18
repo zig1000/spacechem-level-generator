@@ -1,6 +1,6 @@
 # Spacechem Random Level Generator
 
-Built in python 2.7 (.10)
+Built in Python 3.7.2
 
 ## Usage
 
