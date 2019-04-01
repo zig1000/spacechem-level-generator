@@ -903,7 +903,7 @@ def randResearchLevel(settings, verbose=False):
             input_json['molecule'] = molecule.get_json_str()
             input_json['count'] = 12
             input_zone_json['inputs'].append(input_json)
-        level['input-zones'][str(zone_idx)] = input_zone_json
+        level['input-zones'][zone_idx] = input_zone_json
 
     # Add output zones to the level
     for zone_idx, molecule in enumerate(output_molecules):
@@ -914,7 +914,7 @@ def randResearchLevel(settings, verbose=False):
         output_zone_json['molecule'] = molecule.get_json_str()
         output_zone_json['count'] = 10
 
-        level['output-zones'][str(zone_idx)] = output_zone_json
+        level['output-zones'][zone_idx] = output_zone_json
 
     # Add 'features' to the level (bonders, fusers, etc.)
     if difficulty == 0:
@@ -983,11 +983,11 @@ def randProductionLevel(settings, verbose=False):
     input_json['molecule'] = input_molecules[0].get_json_str()
     input_json['count'] = 12
     input_zone_json['inputs'].append(input_json)
-    level['random-input-zones']['0'] = input_zone_json
+    level['random-input-zones'][0] = input_zone_json
 
     # Add the fixed input zones to the level
     for zone_idx, molecule in enumerate(input_molecules[1:]):
-        level['fixed-input-zones'][str(zone_idx)] = molecule.get_json_str()
+        level['fixed-input-zones'][zone_idx] = molecule.get_json_str()
 
     # Add the output zones
     for zone_idx, molecule in enumerate(output_molecules):
@@ -995,7 +995,7 @@ def randProductionLevel(settings, verbose=False):
         output_zone_json['molecule'] = molecule.get_json_str()
         output_zone_json['count'] = 40
 
-        level['output-zones'][str(zone_idx)] = output_zone_json
+        level['output-zones'][zone_idx] = output_zone_json
 
     # Add features to level
     # I'm leaving 'max-reactors' at its default 6 as set in ProductionLevel's initialization
@@ -1008,7 +1008,7 @@ def randProductionLevel(settings, verbose=False):
 
     # No point having assembly/disassembly if any other reactors are available, and there's a max of
     # 4 types of reactors available anyway, probably for this reason
-    if (not settings.fusion and not settings.fission
+    if (not (settings.fusion or settings.fission)
             and random.random() < 0.02):
         level['has-assembly'] = True
         level['has-disassembly'] = True

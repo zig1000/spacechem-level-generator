@@ -253,10 +253,7 @@ class Atom:
 
     def get_json_str(self):
         '''Return a string representing this atom in the level json's format.'''
-        return '{0}{1}{2}{3}{4}'.format(self.col, self.row,
-                                        str(self.atomic_num).rjust(3, '0'),
-                                        self.bonds[RIGHT],
-                                        self.bonds[DOWN])
+        return f'{self.col}{self.row}{self.atomic_num}{self.bonds[RIGHT]}{self.bonds[DOWN]}'
 
     def remaining_bonds(self):
         '''Return the # of remaining bonds this atom is allowed.'''
@@ -366,9 +363,9 @@ class Molecule:
 
     def get_json_str(self):
         '''Return a string representing this molecule in the level json's format.'''
-        result = f'{self.name};{self.formula.get_json_str()};'
+        result = f'{self.name};{self.formula.get_json_str()}'
         for atom in self.atoms:
-            result += atom.get_json_str() + ';'
+            result += ';' + atom.get_json_str()
         return result
 
     def update_formula(self):
@@ -506,9 +503,6 @@ class Level:
     '''Parent class for Research and Production levels.'''
     def __init__(self):
         self.dict = {}
-        self.dict['name'] = 'RandomlyGenerated'
-        self.dict['author'] = "Zig's Random"
-        self.dict['difficulty'] = 0
 
     def __getitem__(self, item):
         return self.dict[item]
@@ -529,38 +523,45 @@ class Level:
 class ResearchLevel(Level):
     def __init__(self):
         Level.__init__(self)
-        self.dict['type'] = 'research'
-        self.dict['input-zones'] = {}
-        self.dict['output-zones'] = {}
+        self['input-zones'] = {}
+        self['output-zones'] = {}
+
+        self['has-large-output'] = False
 
         # Features of the level
-        self.dict['bonder-count'] = 0
-        self.dict['has-sensor'] = False
-        self.dict['has-fuser'] = False
-        self.dict['has-splitter'] = False
-        self.dict['has-teleporter'] = False
+        self['bonder-count'] = 0
+        self['has-sensor'] = False
+        self['has-fuser'] = False
+        self['has-splitter'] = False
+        self['has-teleporter'] = False
 
-        self.dict['has-large-output'] = False
+        self['type'] = 'research'
+        self['name'] = 'RandomlyGenerated'
+        self['author'] = "Zig's Random"
+        self['difficulty'] = 0
 
 class ProductionLevel(Level):
     def __init__(self):
         Level.__init__(self)
-        self.dict['type'] = 'production'
-        self.dict['terrain'] = 0
-        self.dict['random-input-zones'] = {} # Max 1 random
-        self.dict['fixed-input-zones'] = {} # Max 2 fixed
-        self.dict['output-zones'] = {} # Max 3 outputs
+        self['terrain'] = 0
+        self['random-input-zones'] = {} # Max 1 random
+        self['fixed-input-zones'] = {} # Max 2 fixed
+        self['output-zones'] = {} # Max 3 outputs
 
-        self.dict['max-reactors'] = 6 # Default maximum allowed
+        self['max-reactors'] = 6 # Default maximum allowed
 
-        self.dict['has-starter'] = False
-        self.dict['has-assembly'] = False
-        self.dict['has-disassembly'] = False
-        self.dict['has-advanced'] = False # Sensor reactor
-        self.dict['has-nuclear'] = False
-        self.dict['has-superbonder'] = False
+        self['has-starter'] = False
+        self['has-assembly'] = False
+        self['has-disassembly'] = False
+        self['has-advanced'] = False # Sensor reactor
+        self['has-nuclear'] = False
+        self['has-superbonder'] = False
+        self['has-recycler'] = False
 
-        self.dict['has-recycler'] = False
+        self['type'] = 'production'
+        self['name'] = 'RandomlyGenerated'
+        self['author'] = "Zig's Random"
+        self['difficulty'] = 0
 
 
 def splittable_sources(given):
