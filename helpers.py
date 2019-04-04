@@ -30,7 +30,7 @@ class Formula(collections.Counter):
 
     def elements_collection(self):
         '''Return a list containing each element as many times as its count.'''
-        return list(super(Formula, self).elements())
+        return list(super().elements())
 
     # Have to override Counter's add method or else adding two Formulas will make a Counter
     def __add__(self, other):
@@ -67,8 +67,8 @@ class Formula(collections.Counter):
         result = ''
         # Sort Carbon and Hydrogen to the front and alphabetize the rest
         elements = sorted(self.elements(),
-                          key=lambda e: 0 if e.symbol == 'C'
-                                        else 1 if e.symbol == 'H'
+                          key=lambda e: '0' if e.symbol == 'C'
+                                        else '1' if e.symbol == 'H'
                                         else e.symbol)
         for e in elements:
             result += e.symbol
@@ -188,12 +188,13 @@ class GridPos:
     '''Represent a 0-indexed (row, col) position within an input/output zone.
     Indices increase from left to right and top to bottom.
     '''
+    num_cols = 4
+
     def __init__(self, row, col, large_output=False):
         self.row = row
         self.col = col
         self.large_output = large_output
         self.num_rows = 4 + 4*large_output
-        self.num_cols = 4
 
     def __str__(self):
         return f'({self.row}, {self.col})'
@@ -241,7 +242,7 @@ class Atom:
     '''Represent an Atom, including its element, grid position, and attached bonds.
     '''
     def __init__(self, element, pos):
-        self.bonds = [0, 0, 0, 0]
+        self.bonds = [0, 0, 0, 0] # up, right, down, left
         self.set_element(element)
         self.set_pos(pos)
 
@@ -250,6 +251,12 @@ class Atom:
 
     def __repr__(self):
         return f'Atom({self.symbol}, {self.pos}, {self.bonds})'
+
+    def __eq__(self, other):
+        return (type(self) == type(other)
+                and self.element == other.element
+                and self.pos == other.pos
+                and self.bonds == other.bonds)
 
     def get_json_str(self):
         '''Return a string representing this atom in the level json's format.'''
@@ -281,12 +288,16 @@ class Molecule:
     '''
     def __init__(self, large_output=False):
         self.name = 'Randite'
-        self.atoms = [] # Order of atoms in this list is not guaranteed
         self.large_output = large_output
         self.num_rows = 4 + 4*large_output
         self.num_cols = 4
-        self.grid = [[None, None, None, None] for r in range(self.num_rows)]
         self.formula = Formula()
+        # TODO: Could potentially merge grid and used_posns into a single GridPos:Atom dict.
+        #       The main convenience of the grid at this point is that it'll automatically yell at us
+        #       if we start asking for atoms from a GridPos that's out-of-bounds.
+        self.grid = [[None, None, None, None] for _ in range(self.num_rows)]
+        self.used_posns = set() # Tracked so that we can easily iterate over the atoms in the molecule
+
         # To optimize the performance of available_positions(), we'll roughly track the # of open
         # bonds available on this molecule.
         # An atom with no open adjacencies in the grid contributes 0 to this count.
@@ -299,14 +310,18 @@ class Molecule:
     def __setitem__(self, pos, item):
         '''Set the specified grid position (item should be None or an Atom).'''
         self.grid[pos.row][pos.col] = item
+        if item is None:
+            self.used_posns.remove(pos)
+        else:
+            self.used_posns.add(pos)
 
     def __iter__(self):
-        for atom in self.atoms:
-            yield atom
+        '''Iterate over each atom in this molecule. Order of iteration is not defined.'''
+        return (self[p] for p in self.used_posns)
 
     def __len__(self):
         '''Return the # of atoms in this molecule.'''
-        return len(self.atoms)
+        return len(self.used_posns)
 
     def __str__(self):
         '''Pretty-print this molecule.'''
@@ -319,7 +334,7 @@ class Molecule:
                 if atom is None:
                     result += 2*' '
                 else:
-                    result += str(atom)
+                    result += str(atom).rjust(2)
                 # Represent any bonds to the right of the atom
                 left_atom = atom
                 right_atom = self.grid[r][c + 1] if c + 1 < self.num_cols else None
@@ -364,14 +379,14 @@ class Molecule:
     def get_json_str(self):
         '''Return a string representing this molecule in the level json's format.'''
         result = f'{self.name};{self.formula.get_json_str()}'
-        for atom in self.atoms:
+        for atom in self:
             result += ';' + atom.get_json_str()
         return result
 
     def update_formula(self):
         '''To be called after mutating any atom elements. Update the formula of this molecule.'''
         self.formula = Formula()
-        for atom in self.atoms:
+        for atom in self:
             self.formula[atom.element] += 1
 
     def update_open_bonds(self):
@@ -380,7 +395,7 @@ class Molecule:
         an atom as adding the remainder of its max bond count to the open bonds.
         '''
         self.open_bonds = 0
-        for atom in self.atoms:
+        for atom in self:
             if any(self[pos] is None for pos in atom.pos.neighbors()):
                 self.open_bonds += atom.remaining_bonds() # Not exact but we don't need it to be
 
@@ -394,13 +409,13 @@ class Molecule:
         elif self.open_bonds == 0:
             return []
 
-        result_dict = {} # For O(1) checks on whether a position has already been added
-        for atom in self.atoms:
+        checked_posns = set() # For O(1) checks on whether a position has already been added
+        for atom in self:
             if atom.remaining_bonds() > 0:
                 for pos in atom.pos.neighbors():
-                   if self[pos] is None and pos not in result_dict:
-                      result_dict[pos] = True
-        return list(result_dict.keys())
+                   if self[pos] is None and pos not in checked_posns:
+                      checked_posns.add(pos)
+        return list(checked_posns)
 
     def add_atom(self, new_atom):
         '''Adds the given Atom to this molecule. The Atom's position must be open in this molecule.
@@ -410,7 +425,11 @@ class Molecule:
         '''
         if self[new_atom.pos] is not None:
             raise Exception(f"Conflict with existing atom; cannot add {repr(new_atom)} to \n{self}")
+
+        # Add the atom into our grid / formula. Then add its bonds while re-calculating self.open_bonds
         self[new_atom.pos] = new_atom
+        self.used_posns.add(new_atom.pos)
+        self.formula[new_atom.element] += 1
 
         # Quick helper to check if an atom within this molecule's grid has at least 1 open side
         def has_open_side(atom):
@@ -433,10 +452,21 @@ class Molecule:
                 if not has_open_side(adj_atom):
                     self.open_bonds -= adj_atom.remaining_bonds()
 
-        # Update this molecule's formula
-        self.formula[new_atom.element] += 1
+    def remove_atom(self, atom):
+        '''Remove the specified atom from this molecule. Must exactly match.'''
+        if self[atom.pos] != atom:
+            raise ValueError(f"Specified atom {repr(new_atom)} does not match an atom in:\n{self}"
+                             + "\nCannot be removed.")
 
-        self.atoms.append(new_atom)
+        self[atom.pos] = None
+        self.formula[atom.element] -= 1
+
+        # Remove any now-trailing bonds on neighbors
+        for dir, pos in atom.pos.dirs_and_neighbors():
+            adj_atom = self[pos]
+            if adj_atom is not None:
+                adj_atom.bonds[opposite_dir(dir)] = 0
+        self.update_open_bonds()
 
     def is_connected(self):
         '''For the purposes of more advanced construction algorithms we allow adding atoms in
@@ -448,9 +478,10 @@ class Molecule:
 
         # Do a DFS starting from one atom and following the bonds of the molecule. If we don't
         # find every atom, it's not connected
-        stack = [self.atoms[0]]
+        sample_pos = next(iter(self.used_posns))
+        stack = [self[sample_pos]]
         # We don't have to actually 'visit' every atom, seeing them as neighbors is sufficient
-        seen = {self.atoms[0].pos: True} # Track the grid positions of seen connected atoms
+        seen = {sample_pos} # Track the grid positions of seen connected atoms
         while stack:
             if len(seen) == len(self):
                 return True
@@ -460,7 +491,7 @@ class Molecule:
             # stack
             for dir, adj_pos in atom.pos.dirs_and_neighbors():
                 if atom.bonds[dir] != 0 and adj_pos not in seen:
-                    seen[adj_pos] = True
+                    seen.add(adj_pos)
                     adj_atom = self[adj_pos]
                     stack.append(adj_atom)
         return False
@@ -472,14 +503,16 @@ class Molecule:
         Raise an exception if this would place atoms out-of-bounds.
         '''
         # Make sure this is a legal shift
-        for atom in self.atoms:
+        for atom in self:
             if (atom.row + rows < 0 or atom.row + rows > self.num_rows) \
                or (atom.col + cols < 0 or atom.col + cols > self.num_cols):
                raise Exception(f'Cannot shift molecule\n{self}\nby {rows} rows and {cols} cols')
 
-        # Wipe the grid clean and re-add the atoms in the new positions
+        # Wipe the grid clean and re-add the atoms in their new positions
+        atoms = list(self)
         self.grid = [[None, None, None, None] for r in range(self.num_rows)]
-        for atom in self.atoms:
+        self.used_posns = set()
+        for atom in atoms:
             atom.set_pos(GridPos(atom.row + rows, atom.col + cols, large_output=self.large_output))
             self[atom.pos] = atom
 
@@ -491,13 +524,12 @@ class Molecule:
         positions.
         '''
         # Check for conflicts
-        if any(self[atom.pos] is not None for atom in other.atoms):
+        if any(self[atom.pos] is not None for atom in other):
             raise Exception(f'Cannot add molecule\n{other} to molecule\n{self}; conflicting atoms')
 
         # Add the new atoms
-        for atom in other.atoms:
+        for atom in other:
             self.add_atom(atom)
-
 
 class Level:
     '''Parent class for Research and Production levels.'''

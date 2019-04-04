@@ -10,7 +10,25 @@ from helpers import *
 
 class RandomizationSettings(argparse.Namespace):
     '''Container class for args affecting the level randomization.'''
-    pass
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # If no nuclear options were specified, add nuclear with 1/3 chance:
+        # 1/6 of both + 1/12 of fusion only + 1/12 fission only.
+        if self.fusion is None and self.fission is None:
+            choice = random.random()
+            if choice < 1/6:
+                self.fusion = self.fission = True
+            elif choice < 1/4:
+                self.fusion = True
+                self.fission = False
+            elif choice < 1/3:
+                self.fusion = False
+                self.fission = True
+
+        # If large output option wasn't specified, add it with 10% chance
+        if self.large_output is None:
+            self.large_output = random.random() < 0.1
 
 class ElementPicker:
     '''Class to assist with randomly picking elements from a given selection, with a chance to
@@ -57,6 +75,37 @@ class ElementPicker:
             element = random.choice(valid_used_elements)
         return element
 
+def mutate_molecule(molecule, settings):
+    '''Given a molecule, perform an atomic mutation on it, i.e. do one of:
+    * Mutate a single atom's element and update its bonds
+    * Remove a single atom (without disconnecting the molecule)
+    TBA:
+    * Add an atom
+    * Modify a bond (if possible)
+    '''
+    r = random.random()
+    if r < 0.5 or len(molecule) == 1:
+        # With 50% probability or if there are no spare atoms to remove, mutate an element
+        element_picker = ElementPicker(elements=settings.elements)
+        # If the molecule is a lone atom, we can only mutate its element
+        atom = random.choice(list(molecule))
+        atom.set_element(element_picker.pick(min_bond_count=sum(atom.bonds)))
+        molecule.update_formula()
+        molecule.update_open_bonds()
+    else:
+        # Attempt to remove random atoms until we find one that can
+        # be removed without disconnecting the molecule.
+        # Given that the molecule contains at least 2 atoms, we know such an atom exists
+        atoms = list(molecule)
+        random.shuffle(atoms)
+
+        for atom in atoms:
+            new_molecule = copy.deepcopy(molecule)
+            new_molecule.remove_atom(atom)
+
+            if new_molecule.is_connected():
+                molecule.remove_atom(atom)
+                return
 
 def min_split_formula(formula, max_formulas=None):
     '''Given a formula, split it into an integer linear combination of valid (4x4 zone) formulas,
@@ -217,6 +266,8 @@ def randMoleculeFromFormula(formula, large_output=False):
             #       biased but guaranteed to work construction method (build middle-out using
             #       highest bond count atoms first).
 
+        # Do a sub-loop attempting to build a single molecule
+        # First randomize the order elements are selected to be added
         atom_elements = formula.elements_collection()
         random.shuffle(atom_elements)
 
@@ -271,29 +322,30 @@ def randMoleculeFromFormula(formula, large_output=False):
         attempts += 1
 
         # If any atoms failed to be added, retry
-        if atom_elements:
+        if not atom_elements:
+            break
+
+    # Now that we've successfully created a connected molecule, randomly add more bonds.
+    # For now, just walk through every atom and give a 50% chance to increase each of its bonds
+    # (so max +2 bonds between any two atoms, and no need to worry about the 3-bond limit)
+    atoms = list(molecule)
+    random.shuffle(atoms)
+    for atom in atoms:
+        if atom.remaining_bonds() == 0:
             continue
-
-        # Otherwise, now that we've successfully added all the atoms, randomly add more bonds
-        # For now, just walk through every atom and give a 50% chance to increase each of its bonds
-        # (so max +2 bonds between any two atoms, and no need to worry about the 3-bond limit)
-        random.shuffle(molecule.atoms)
-        for atom in molecule.atoms:
+        # Identify all the neighbors we can bond to
+        dirs_and_adj_atoms = [(d, molecule[pos]) for d, pos in atom.pos.dirs_and_neighbors()
+                              if molecule[pos] is not None
+                                 and molecule[pos].remaining_bonds() > 0]
+        random.shuffle(dirs_and_adj_atoms)
+        for dir, adj_atom in dirs_and_adj_atoms:
+            if random.random() < 0.5:
+                atom.bonds[dir] += 1
+                adj_atom.bonds[opposite_dir(dir)] += 1
             if atom.remaining_bonds() == 0:
-                continue
-            # Identify all the neighbors we can bond to
-            dirs_and_adj_atoms = [(d, molecule[pos]) for d, pos in atom.pos.dirs_and_neighbors()
-                                  if molecule[pos] is not None
-                                     and molecule[pos].remaining_bonds() > 0]
-            random.shuffle(dirs_and_adj_atoms)
-            for dir, adj_atom in dirs_and_adj_atoms:
-                if random.random() < 0.5:
-                    atom.bonds[dir] += 1
-                    adj_atom.bonds[opposite_dir(dir)] += 1
-                if atom.remaining_bonds() == 0:
-                    break
+                break
 
-        return molecule
+    return molecule
 
 def randSymmetricMolecule(settings):
     '''Generate a random symmetric molecule.
@@ -483,7 +535,7 @@ def randSymmetricMolecule(settings):
                 neighbor_atom.bonds[opposite_dir(new_bond_dir)] = bond_count
 
 
-    checked_posns = {}
+    checked_posns = set()
     for atom in molecule:
         if atom.pos in checked_posns:
             continue
@@ -518,7 +570,7 @@ def randSymmetricMolecule(settings):
         for twin_posn in set(twin_posns): # Remove duplicate positions
             molecule[twin_posn].set_element(new_element)
             # Also mark each twin position as visited
-            checked_posns[twin_posn] = True
+            checked_posns.add(twin_posn)
 
     # Fix the molecule's formula and open bond count after our changes
     molecule.update_formula()
@@ -534,10 +586,8 @@ def randPolymer(settings):
 
     At least one of the allowed elements must have a max bond count of 2 or more.
     '''
-    # Sanitize input
-    elements = [e for e in settings.elements if e.max_bonds != 0]
-
-    element_picker = ElementPicker(elements=elements, prob_new_element=0.5)
+    # Sanitize the input a little
+    element_picker = ElementPicker(elements=settings.elements, prob_new_element=0.5)
 
     molecule = Molecule(large_output=settings.large_output)
 
@@ -567,8 +617,8 @@ def randPolymer(settings):
     core_col = random.choice([0, 1, 1, 1, 2, 2, 2, 3])
 
     for i in range(segment_height):
-        core_atom = Atom(element_picker.pick(min_bond_count=min_core_bonds),
-                         GridPos(top_row + i, core_col, large_output=settings.large_output))
+        core_atom = Atom(element=element_picker.pick(min_bond_count=min_core_bonds),
+                         pos=GridPos(top_row + i, core_col, large_output=settings.large_output))
 
         # TODO: Second core atom of the segment shouldn't have to be directly
         #       bonded to the first core atom.
@@ -595,7 +645,8 @@ def randPolymer(settings):
             break
 
         # TODO: Rig min bonds of element to ensure num_atoms is met
-        atom = Atom(element_picker.pick(), random.choice(available_positions))
+        atom = Atom(element=element_picker.pick(min_bond_count=1),
+                    pos=random.choice(available_positions))
 
         # Randomly add bonds to the atom for its neighbors, to a minimum of 1 bond
         neighbor_dirs = [d for d, p in atom.pos.dirs_and_neighbors()
@@ -638,7 +689,8 @@ def randPolymer(settings):
         if not available_positions:
             break
 
-        atom = Atom(element=element_picker.pick(), pos=random.choice(available_positions))
+        atom = Atom(element=element_picker.pick(min_bond_count=1),
+                    pos=random.choice(available_positions))
 
         # Identify neighbouring atoms and add bonds to them
         neighbor_dirs = [d for d, p in atom.pos.dirs_and_neighbors() \
@@ -654,16 +706,23 @@ def randPolymer(settings):
     return molecule
 
 def randMolecule(settings):
-    '''Generate a random 'nice' molecule - currently, either symmetric or a polymer.'''
+    '''Generate a random 'nice' molecule - currently, either symmetric or a polymer.
+    To spice things up, add a chance to slightly mutate an otherwise 'nice' molecule.
+    '''
     if settings.symmetric and not settings.polymer:
-        return randSymmetricMolecule(settings)
+        molecule = randSymmetricMolecule(settings)
     elif settings.polymer and not settings.symmetric:
-        return randPolymer(settings)
-
-    if random.random() < 0.5:
-        return randSymmetricMolecule(settings)
+        molecule = randPolymer(settings)
+    elif random.random() < 0.5:
+        molecule = randSymmetricMolecule(settings)
     else:
-        return randPolymer(settings)
+        molecule = randPolymer(settings)
+
+    # Add a chance to slightly mutate a 'too perfect' molecule
+    if random.random() < 0.5:
+        mutate_molecule(molecule, settings=settings)
+
+    return molecule
 
 def randNiceMoleculeFromFormula(formula, settings):
     '''Given a formula, try to build a 'nice' molecule.'''
@@ -675,7 +734,7 @@ def randMolecules(num_molecules, settings):
     return [randMolecule(settings) for _ in range(num_molecules)]
 
 
-def inv_fission_operation(formula):
+def rand_inverse_fission(formula):
     '''Mutate the given formula using a random series of valid inverse fission operations which add
     up to a single element. Return the element which was added (may not be a new element).
     '''
@@ -685,8 +744,7 @@ def inv_fission_operation(formula):
     if not valid_fissile_inputs_dict:
         raise FormulaValidityError(f"Given formula unobtainable via fission:\n{formula}")
 
-    # Randomly select a valid fissionable input element
-    new_element_mass, new_element_count = random.choice(valid_fissile_inputs_dict.items())
+    new_element_mass, new_element_count = random.choice(list(valid_fissile_inputs_dict.items()))
     new_element = elements_data.elements_dict[new_element_mass]
 
     # Calculate and remove the element's dependencies, then add the new element
@@ -695,7 +753,7 @@ def inv_fission_operation(formula):
 
     return new_element
 
-def inv_fusion_operation(formula, target_element=None):
+def rand_inverse_fusion(formula, target_element=None):
     '''Mutate the given formula using any series of valid inverse fusion operations on a single
     element. The target element can optionally be specified.
     '''
@@ -775,14 +833,14 @@ def randInputsFromOutputs(molecules, settings):
                 # TODO: More complex order of nuclear operations.
                 #       Fusion then fission is more involved as it can easily end up not requiring
                 #       fission anyway.
-                nuclear_element = inv_fission_operation(inputs_formula)
-                if nuclear_element <= 109:
-                    inv_fusion_operation(inputs_formula, target_element=nuclear_element)
+                nuclear_element = rand_inverse_fission(inputs_formula)
+                if nuclear_element.atomic_num <= 109:
+                    _ = rand_inverse_fusion(inputs_formula, target_element=nuclear_element)
                 tries += 1
         elif settings.fission:
-            _ = inv_fission_operation(inputs_formula)
+            _ = rand_inverse_fission(inputs_formula)
         elif settings.fusion:
-            inv_fusion_operation(inputs_formula)
+            _ = rand_inverse_fusion(inputs_formula)
     except FormulaValidityError as e:
         raise MoleculeValidityError("Could not complete nuclear operations with given molecule(s).") from e
 
@@ -1067,15 +1125,16 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--outputs', action='store', type=int, default=None,
                         choices=[1, 2, 3],
                         help="The # of outputs to use.")
-    parser.add_argument('--large_output', action="store_true",
-                        help="Set a research level to have a large output zone")
+    parser.add_argument('--large_output', action="store_true", default=None,
+                        help="Set a research level to have a large output zone." \
+                             + " Default has a small chance.")
 
-    parser.add_argument('--fusion', action="store_true",
-                        help="Allow fusion in the level. Default disallowed.")
-    parser.add_argument('--fission', action="store_true",
-                        help="Allow fission in the level. Default disallowed.")
-    parser.add_argument('--nuclear', action="store_true",
-                        help="Allow both fission and fusion in the level. Default disallowed.")
+    parser.add_argument('--fusion', action="store_true", default=None,
+                        help="Use fusion in the level. Default has a small chance.")
+    parser.add_argument('--fission', action="store_true", default=None,
+                        help="Allow fission in the level. Default has a small chance.")
+    parser.add_argument('--nuclear', action="store_true", default=None,
+                        help="Allow both fission/fusion in the level. Default has a small chance.")
 
     molecule_topology_args = parser.add_mutually_exclusive_group()
     molecule_topology_args.add_argument('--polymer', action='store_true',
